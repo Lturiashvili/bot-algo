@@ -39,7 +39,7 @@ class Portfolio:
         import time
         self.positions[p.symbol] = p
         # Convert candle cooldown to seconds (assume 15m candles default)
-        cooldown_seconds = cooldown_candles * 60
+        cooldown_seconds = cooldown_candles * 900
         self.cooldown_until_ts[p.symbol] = time.time() + cooldown_seconds
 
     def close(self, symbol: str) -> None:
