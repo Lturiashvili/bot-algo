@@ -131,14 +131,16 @@ class Engine:
         )
 
         if sig is None or sig.action != "BUY":
-            log.info(
-                "signal_hold_detailed",
-                extra={
-                    "symbol": symbol,
-                    "idx": idx,
-                    "reason": getattr(sig, "reason", "NO_SIGNAL"),
-                },
-            )
+            reason = getattr(sig, "reason", "NO_SIGNAL")
+
+log.info(
+    f"signal_hold_detailed | {symbol} | {reason}",
+    extra={
+        "symbol": symbol,
+        "idx": idx,
+        "reason": reason,
+    },
+)
             return
 
         # ML confirmation
