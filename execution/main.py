@@ -130,18 +130,18 @@ class Engine:
             self.s.ATR_PERIOD,
         )
 
-        if sig is None or sig.action != "BUY":
-            reason = getattr(sig, "reason", "NO_SIGNAL")
+if sig is None or sig.action != "BUY":
+    reason = getattr(sig, "reason", "NO_SIGNAL")
 
-log.info(
-    f"signal_hold_detailed | {symbol} | {reason}",
-    extra={
-        "symbol": symbol,
-        "idx": idx,
-        "reason": reason,
-    },
-)
-            return
+    log.info(
+        f"signal_hold_detailed | {symbol} | {reason}",
+        extra={
+            "symbol": symbol,
+            "idx": idx,
+            "reason": reason,
+        },
+    )
+    return
 
         # ML confirmation
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
