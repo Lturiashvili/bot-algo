@@ -34,6 +34,9 @@ def compute_long_signal(
     rsi_min: float,
     atr_period: int,
 ) -> Optional[Signal]:
+
+    print("ORDERBOOK_ALPHA_RUNNING")
+    
     need = max(ema_slow, rsi_period, atr_period) + 5
     if len(df15) < need or len(df30) < ema_slow + 5 or len(df1h) < ema_slow + 5:
         return None
