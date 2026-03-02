@@ -77,4 +77,29 @@ def compute_long_signal(
         )
         return Signal("BUY", "TREND_OK", atr_val, feats)
 
-    return Signal("HOLD", "FILTERS_FAIL:trend=%s,rsi=%s,ext=%s" % (up15 and up30 and up1h, rsi_ok, not_too_extended), atr_val, np.array([dist, float(r15.iloc[-1]) / 100.0, 0, 0, 0, float(up30 and up1h)], dtype=float))
+    # --- V2.7 ANALYZER METADATA (non-breaking) ---
+    trend_ok = (up15 and up30 and up1h)
+    reason_str = (
+        f"FILTERS_FAIL:"
+        f"trend={trend_ok},"
+        f"rsi={rsi_ok},"
+        f"ext={not_too_extended},"
+        f"dist={dist:.4f},"
+        f"rsi_val={float(r15.iloc[-1]):.2f}"
+    )
+    return Signal(
+        "HOLD",
+        reason_str,
+        atr_val,
+        np.array(
+            [
+                dist,
+                float(r15.iloc[-1]) / 100.0,
+                0,
+                0,
+                0,
+                float(up30 and up1h),
+            ],
+            dtype=float,
+        ),
+    )
