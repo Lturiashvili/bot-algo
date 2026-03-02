@@ -1,9 +1,11 @@
+# FULL DEBUG VERSION OF main.py
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime, timezone
+import os
 
 import numpy as np
 import pandas as pd
@@ -25,6 +27,8 @@ from execution.backtester import run_backtest
 logging.basicConfig(level=Settings().LOG_LEVEL)
 log = logging.getLogger("main")
 
+print("ENGINE_MODULE_LOADED")
+
 
 def _ms_to_dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
@@ -32,6 +36,7 @@ def _ms_to_dt(ms: int) -> datetime:
 
 class Engine:
     def __init__(self, s: Settings) -> None:
+        print("ENGINE_INIT")
         self.s = s
         self.db = TradeDB(s.DB_PATH)
         self.portfolio = Portfolio()
@@ -58,6 +63,7 @@ class Engine:
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
     async def seed_history(self, symbol: str) -> None:
+        print("SEED_HISTORY", symbol)
         candles = await self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=600)
         df = pd.DataFrame(
             [
@@ -77,13 +83,7 @@ class Engine:
 
     def resample(self, symbol: str, tf: str) -> pd.DataFrame:
         base = self._df15[symbol]
-        if tf == "30m":
-            rule = "30min"
-        elif tf == "1h":
-            rule = "60min"
-        else:
-            raise ValueError("Unsupported tf")
-
+        rule = "30min" if tf == "30m" else "60min"
         o = base["open"].resample(rule, label="right", closed="right").first()
         h = base["high"].resample(rule, label="right", closed="right").max()
         l = base["low"].resample(rule, label="right", closed="right").min()
@@ -92,13 +92,11 @@ class Engine:
         return pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": v}).dropna()
 
     async def on_closed_15m(self, symbol: str, end_ms: int, o: float, h: float, l: float, c: float, v: float) -> None:
+        print("ON_CLOSED_15M", symbol)
         ts = _ms_to_dt(end_ms)
         df = self._df15[symbol]
         df.loc[ts, ["open", "high", "low", "close", "volume"]] = [o, h, l, c, v]
         df.sort_index(inplace=True)
-        if len(df) > 2000:
-            df = df.iloc[-2000:]
-            self._df15[symbol] = df
 
         self._idx[symbol] += 1
         idx = self._idx[symbol]
@@ -107,23 +105,27 @@ class Engine:
         await self.maybe_open_position(symbol, idx)
 
     async def maybe_open_position(self, symbol: str, idx: int) -> None:
+        print("MAYBE_OPEN_POSITION", symbol)
+
         if self.portfolio.has_position(symbol):
+            print("HAS_POSITION_SKIP")
             return
         if self.portfolio.in_cooldown(symbol, idx):
+            print("COOLDOWN_SKIP")
             return
 
         df15 = self._df15[symbol]
 
-        # --- PRODUCTION WARMUP GUARD ---
         min_bars = max(self.s.EMA_SLOW + 5, 50)
         if len(df15) < min_bars:
-            log.info("skip_incomplete_history", extra={"symbol": symbol, "rows": len(df15)})
+            print("WARMUP_SKIP", len(df15), min_bars)
             return
 
         df30 = self.resample(symbol, "30m")
         df1h = self.resample(symbol, "1h")
 
-        # --- CLEAN SIGNAL CALL ---
+        print("BEFORE_SIGNAL_CALL", symbol)
+
         sig = compute_long_signal(
             df15, df30, df1h,
             self.s.EMA_FAST, self.s.EMA_SLOW,
@@ -131,127 +133,28 @@ class Engine:
             self.s.ATR_PERIOD,
         )
 
-        # === HOLD PATH ===
+        print("AFTER_SIGNAL_CALL", symbol)
+
         if sig is None or sig.action != "BUY":
-            reason = getattr(sig, "reason", "NO_SIGNAL")
-
-            log.info(
-                f"signal_hold_detailed | {symbol} | {reason}",
-                extra={
-                    "symbol": symbol,
-                    "idx": idx,
-                    "reason": reason,
-                },
-            )
+            print("NO_BUY_SIGNAL")
             return
 
-        # === ML confirmation ===
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
-            log.info("ml_reject", extra={"symbol": symbol, "min": self.s.ML_MIN_PROBA})
+            print("ML_REJECT")
             return
 
-        usdt = await self.ex.fetch_usdt_balance()
-        notional = self.risk.order_notional_usdt(usdt)
-        if notional < 10:
-            log.warning("notional_too_small", extra={"symbol": symbol, "usdt": usdt, "notional": notional})
-            return
-
-        buy = await self.router.open_long(self.ex, symbol, notional)
-        entry = self.risk.apply_slippage(buy.avg_price, is_entry=True)
-        qty = buy.executed_qty
-
-        stop, tp = self.risk.stops_from_atr(entry, sig.atr_value)
-        trailing = stop
-        fee = self.risk.fee_usd(notional, taker=True)
-
-        trade_id = await self.db.insert_entry(
-            exchange=self.ex.name,
-            symbol=symbol,
-            qty=qty,
-            entry_price=entry,
-            fee_usd=fee,
-            meta={"reason": sig.reason, "atr": sig.atr_value},
-        )
-
-        pos = Position(
-            symbol=symbol,
-            qty=qty,
-            entry_price=entry,
-            entry_time=Portfolio.now(),
-            atr_at_entry=sig.atr_value,
-            stop_price=stop,
-            tp_price=tp,
-            best_price=entry,
-            trailing_enabled=self.s.TRAILING_ENABLED,
-            trailing_stop=trailing,
-            trade_id=trade_id,
-            partial_done=False,
-        )
-        self.portfolio.open(pos, idx, self.s.COOLDOWN_CANDLES)
-
-        log.info("entered_long", extra={"symbol": symbol, "qty": qty, "entry": entry, "stop": stop, "tp": tp, "trade_id": trade_id})
-
-        qty_part = self.risk.partial_qty(qty)
-        if qty_part > 0:
-            await self.router.place_partial_tp_limit(self.ex, symbol, qty_part, tp)
+        print("BUY_SIGNAL_CONFIRMED")
 
     async def manage_open_position(self, symbol: str, last_close: float) -> None:
-        pos = self.portfolio.get(symbol)
-        if pos is None:
-            return
-
-        if last_close > pos.best_price:
-            pos.best_price = last_close
-            if pos.trailing_enabled:
-                pos.trailing_stop = self.risk.trailing_stop(pos.best_price, pos.atr_at_entry)
-
-        stop_level = min(pos.stop_price, pos.trailing_stop) if pos.trailing_enabled else pos.stop_price
-
-        if (not pos.partial_done) and last_close >= pos.tp_price:
-            qty_part = self.risk.partial_qty(pos.qty)
-            if qty_part > 0:
-                sell = await self.router.close_long_market(self.ex, symbol, qty_part)
-                exit_px = self.risk.apply_slippage(sell.avg_price, is_entry=False)
-                notional = qty_part * exit_px
-                fee = self.risk.fee_usd(notional, taker=True)
-                pnl = (exit_px - pos.entry_price) * qty_part - fee
-                pos.qty -= qty_part
-                pos.partial_done = True
-                log.info("partial_tp", extra={"symbol": symbol, "qty": qty_part, "exit": exit_px, "pnl": pnl})
-
-        if last_close <= stop_level:
-            qty = pos.qty
-            if qty > 0:
-                sell = await self.router.close_long_market(self.ex, symbol, qty)
-                exit_px = self.risk.apply_slippage(sell.avg_price, is_entry=False)
-                notional = qty * exit_px
-                fee = self.risk.fee_usd(notional, taker=True)
-                pnl = (exit_px - pos.entry_price) * qty - fee
-                await self.db.close_trade(pos.trade_id, exit_px, pnl, fee)
-                log.info("stop_exit", extra={"symbol": symbol, "qty": qty, "exit": exit_px, "pnl": pnl, "stop": stop_level})
-            await self.router.cancel_all(self.ex, symbol)
-            self.portfolio.close(symbol)
-            return
-
-        if pos.partial_done and last_close >= pos.tp_price:
-            qty = pos.qty
-            if qty > 0:
-                sell = await self.router.close_long_market(self.ex, symbol, qty)
-                exit_px = self.risk.apply_slippage(sell.avg_price, is_entry=False)
-                notional = qty * exit_px
-                fee = self.risk.fee_usd(notional, taker=True)
-                pnl = (exit_px - pos.entry_price) * qty - fee
-                await self.db.close_trade(pos.trade_id, exit_px, pnl, fee)
-                log.info("tp_exit", extra={"symbol": symbol, "qty": qty, "exit": exit_px, "pnl": pnl})
-            await self.router.cancel_all(self.ex, symbol)
-            self.portfolio.close(symbol)
+        return
 
     async def run_live(self) -> None:
+        print("RUN_LIVE_START")
         await self.db.init()
         for sym in self.s.SYMBOLS:
             await self.seed_history(sym)
 
-        log.info("live_start", extra={"exchange": self.ex.name, "symbols": list(self.s.SYMBOLS), "tf": self.s.PRIMARY_TF})
+        print("LIVE_LOOP_START")
 
         async for msg in self.ws.stream_klines(list(self.s.SYMBOLS), self.s.PRIMARY_TF):
             if not msg.is_closed:
@@ -260,26 +163,13 @@ class Engine:
                 continue
             await self.on_closed_15m(msg.symbol, msg.end_ms, msg.o, msg.h, msg.l, msg.c, msg.v)
 
-    async def run_backtest_cli(self, symbol: str, days: int = 90) -> None:
-        candles = await self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=min(2000, days * 96))
-        df15 = pd.DataFrame(
-            [
-                {"ts": _ms_to_dt(c["close_time"]), "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"], "volume": c["volume"]}
-                for c in candles
-            ]
-        ).set_index("ts")
-        rep = run_backtest(df15, self.s, self.risk, start_balance=self.s.BACKTEST_START_BALANCE)
-        log.info("backtest_report", extra={"symbol": symbol, "pnl": rep.pnl, "win_rate": rep.win_rate, "max_dd": rep.max_dd, "sharpe": rep.sharpe, "trades": rep.trades})
-
-
 async def main() -> None:
+    print("MAIN_STARTING")
     s = Settings()
     engine = Engine(s)
 
-    if (__import__("os").getenv("RUN_BACKTEST") or "").strip() == "1":
-        sym = __import__("os").getenv("BACKTEST_SYMBOL", "BTCUSDT").strip().upper()
-        days = int(__import__("os").getenv("BACKTEST_DAYS", "90"))
-        await engine.run_backtest_cli(sym, days)
+    if (os.getenv("RUN_BACKTEST") or "").strip() == "1":
+        print("RUNNING_BACKTEST")
         return
 
     await engine.run_live()
