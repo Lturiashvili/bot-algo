@@ -57,7 +57,7 @@ def compute_long_signal(
 
     # avoid overextension vs slow EMA (conservative)
     dist = (float(c15.iloc[-1]) - float(es15.iloc[-1])) / max(float(es15.iloc[-1]), 1e-12)
-    not_too_extended = dist < 0.03
+    not_too_extended = dist < 0.05
 
     if up15 and up30 and up1h and rsi_ok and not_too_extended:
         atr_pct = atr_val / max(float(c15.iloc[-1]), 1e-12)
@@ -77,4 +77,4 @@ def compute_long_signal(
         )
         return Signal("BUY", "TREND_OK", atr_val, feats)
 
-    return Signal("HOLD", "FILTERS_FAIL", atr_val, np.array([dist, float(r15.iloc[-1]) / 100.0, 0, 0, 0, float(up30 and up1h)], dtype=float))
+    return Signal("HOLD", "FILTERS_FAIL:trend=%s,rsi=%s,ext=%s" % (up15 and up30 and up1h, rsi_ok, not_too_extended), atr_val, np.array([dist, float(r15.iloc[-1]) / 100.0, 0, 0, 0, float(up30 and up1h)], dtype=float))
