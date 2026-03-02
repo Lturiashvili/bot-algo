@@ -82,6 +82,7 @@ class Engine:
             rule = "60min"
         else:
             raise ValueError("Unsupported tf")
+
         o = base["open"].resample(rule, label="right", closed="right").first()
         h = base["high"].resample(rule, label="right", closed="right").max()
         l = base["low"].resample(rule, label="right", closed="right").min()
@@ -111,23 +112,33 @@ class Engine:
             return
 
         df15 = self._df15[symbol]
+
+        # --- PRODUCTION WARMUP GUARD ---
+        min_bars = max(self.s.EMA_SLOW + 5, 50)
+        if len(df15) < min_bars:
+            log.info("skip_incomplete_history", extra={"symbol": symbol, "rows": len(df15)})
+            return
+
         df30 = self.resample(symbol, "30m")
         df1h = self.resample(symbol, "1h")
 
-        
-        # --- V2 CLOSED-CANDLE GUARD ---
-        # Skip if last 15m candle looks incomplete (live safety)
-        if len(df15) < 2:
-            log.info("skip_incomplete_history", extra={"symbol": symbol})
-            return
-
+        # --- CLEAN SIGNAL CALL ---
+        sig = compute_long_signal(
             df15, df30, df1h,
             self.s.EMA_FAST, self.s.EMA_SLOW,
             self.s.RSI_PERIOD, self.s.RSI_LONG_MIN,
             self.s.ATR_PERIOD,
         )
+
         if sig is None or sig.action != "BUY":
-            log.info("signal_hold_detailed", extra={"symbol": symbol, "idx": idx}, extra={"symbol": symbol, "reason": sig.reason if sig else "NO_SIGNAL"})
+            log.info(
+                "signal_hold_detailed",
+                extra={
+                    "symbol": symbol,
+                    "idx": idx,
+                    "reason": getattr(sig, "reason", "NO_SIGNAL"),
+                },
+            )
             return
 
         # ML confirmation
@@ -176,7 +187,6 @@ class Engine:
 
         log.info("entered_long", extra={"symbol": symbol, "qty": qty, "entry": entry, "stop": stop, "tp": tp, "trade_id": trade_id})
 
-        # best-effort partial TP limit
         qty_part = self.risk.partial_qty(qty)
         if qty_part > 0:
             await self.router.place_partial_tp_limit(self.ex, symbol, qty_part, tp)
@@ -186,7 +196,6 @@ class Engine:
         if pos is None:
             return
 
-        # update best price / trailing
         if last_close > pos.best_price:
             pos.best_price = last_close
             if pos.trailing_enabled:
@@ -194,7 +203,6 @@ class Engine:
 
         stop_level = min(pos.stop_price, pos.trailing_stop) if pos.trailing_enabled else pos.stop_price
 
-        # partial TP software fallback
         if (not pos.partial_done) and last_close >= pos.tp_price:
             qty_part = self.risk.partial_qty(pos.qty)
             if qty_part > 0:
@@ -207,7 +215,6 @@ class Engine:
                 pos.partial_done = True
                 log.info("partial_tp", extra={"symbol": symbol, "qty": qty_part, "exit": exit_px, "pnl": pnl})
 
-        # stop out
         if last_close <= stop_level:
             qty = pos.qty
             if qty > 0:
@@ -222,7 +229,6 @@ class Engine:
             self.portfolio.close(symbol)
             return
 
-        # full TP after partial (simple: same TP target)
         if pos.partial_done and last_close >= pos.tp_price:
             qty = pos.qty
             if qty > 0:
@@ -266,9 +272,7 @@ async def main() -> None:
     s = Settings()
     engine = Engine(s)
 
-    # Simple CLI via env:
-    # RUN_BACKTEST=1 BACKTEST_SYMBOL=BTCUSDT BACKTEST_DAYS=120
-    if (np_str := __import__("os").getenv("RUN_BACKTEST")) and np_str.strip() == "1":
+    if (__import__("os").getenv("RUN_BACKTEST") or "").strip() == "1":
         sym = __import__("os").getenv("BACKTEST_SYMBOL", "BTCUSDT").strip().upper()
         days = int(__import__("os").getenv("BACKTEST_DAYS", "90"))
         await engine.run_backtest_cli(sym, days)
