@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from execution.indicators import ema, rsi, atr
+from execution.strategy.pressure_analyzer import log_pressure
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,17 @@ def compute_long_signal(
     # avoid overextension vs slow EMA (conservative)
     dist = (float(c15.iloc[-1]) - float(es15.iloc[-1])) / max(float(es15.iloc[-1]), 1e-12)
     not_too_extended = dist < 0.05
+
+    # --- V2.7 pressure analyzer (non-blocking) ---
+    log_pressure(
+        symbol="UNKNOWN",
+        up15=up15,
+        up30=up30,
+        up1h=up1h,
+        rsi_ok=rsi_ok,
+        not_too_extended=not_too_extended,
+        atr_ok=(atr_val > 0),
+    )
 
     if up15 and up30 and up1h and rsi_ok and not_too_extended:
         atr_pct = atr_val / max(float(c15.iloc[-1]), 1e-12)
