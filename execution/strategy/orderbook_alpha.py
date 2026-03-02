@@ -1,10 +1,10 @@
+from __future__ import annotations
 
 # --- V2 ADAPTIVE THRESHOLD (lightweight) ---
 def _adaptive_relax(value: float, base: float, relax: float = 0.05) -> bool:
     # allows small dynamic relaxation in live regime
     return value >= (base - relax)
 
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
