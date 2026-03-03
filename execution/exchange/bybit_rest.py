@@ -1,148 +1,200 @@
+# bybit_rest.py
+# Production-grade async Bybit REST client
+# Schema-normalized OHLCV + safe order execution
+
 import aiohttp
-import logging
-import time
+import asyncio
 import hmac
 import hashlib
-from urllib.parse import urlencode
+import time
+import logging
+from typing import List, Dict, Any, Optional
 
-log = logging.getLogger("bybit_rest")
+logger = logging.getLogger(__name__)
 
 
-class BybitSpot:
-    def __init__(self, base_url, api_key, api_secret, limiter):
-        self.base_url = base_url.rstrip("/")
+class BybitREST:
+    BASE_URL = "https://api.bybit.com"
+
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        recv_window: int = 5000,
+        timeout: int = 10,
+    ):
         self.api_key = api_key
-        self.api_secret = api_secret.encode()
-        self.limiter = limiter
+        self.api_secret = api_secret
+        self.recv_window = recv_window
+        self.timeout = timeout
+        self._session: Optional[aiohttp.ClientSession] = None
 
     # ==========================================================
-    # INTERVAL MAPPING (CRITICAL FIX)
+    # Session Handling
     # ==========================================================
 
-    def _map_interval(self, interval: str) -> str:
-        mapping = {
-            "1m": "1",
-            "3m": "3",
-            "5m": "5",
-            "15m": "15",
-            "30m": "30",
-            "1h": "60",
-            "2h": "120",
-            "4h": "240",
-            "1d": "D"
-        }
-        return mapping.get(interval, interval)
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+        return self._session
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     # ==========================================================
-    # SIGNING
+    # Signing
     # ==========================================================
 
-    def _sign(self, params: dict) -> dict:
-        timestamp = str(int(time.time() * 1000))
-        recv_window = "5000"
-
-        param_str = urlencode(sorted(params.items()))
-        payload = timestamp + self.api_key + recv_window + param_str
-
-        signature = hmac.new(
-            self.api_secret,
-            payload.encode(),
+    def _sign(self, params: Dict[str, Any]) -> str:
+        ordered = "&".join(f"{k}={params[k]}" for k in sorted(params))
+        return hmac.new(
+            self.api_secret.encode(),
+            ordered.encode(),
             hashlib.sha256
         ).hexdigest()
 
-        return {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-RECV-WINDOW": recv_window,
-            "Content-Type": "application/json"
+    # ==========================================================
+    # Public: Fetch OHLCV (Normalized Schema)
+    # ==========================================================
+
+    async def fetch_ohlcv(
+        self,
+        symbol: str,
+        interval: str = "1",
+        limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """
+        Returns normalized candles:
+        [
+            {
+                "ts": int,
+                "open": float,
+                "high": float,
+                "low": float,
+                "close": float,
+                "volume": float
+            }
+        ]
+        """
+
+        url = f"{self.BASE_URL}/v5/market/kline"
+        params = {
+            "category": "spot",
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
         }
 
+        session = await self._get_session()
+
+        try:
+            async with session.get(url, params=params) as resp:
+                data = await resp.json()
+
+                if data.get("retCode") != 0:
+                    raise Exception(f"Bybit error: {data}")
+
+                raw = data["result"]["list"]
+
+                normalized: List[Dict[str, Any]] = []
+
+                for c in raw:
+                    # Bybit returns reversed chronological order
+                    normalized.append({
+                        "ts": int(c[0]),
+                        "open": float(c[1]),
+                        "high": float(c[2]),
+                        "low": float(c[3]),
+                        "close": float(c[4]),
+                        "volume": float(c[5]),
+                    })
+
+                # Sort ascending by timestamp (important for indicators)
+                normalized.sort(key=lambda x: x["ts"])
+
+                logger.info(f"FETCH_OHLCV_OK {symbol} candles={len(normalized)}")
+
+                return normalized
+
+        except Exception as e:
+            logger.exception(f"FETCH_OHLCV_FAILED {symbol}: {e}")
+            raise
+
     # ==========================================================
-    # FETCH OHLCV
+    # Private: Market Buy (Quote-Based)
     # ==========================================================
 
-    async def fetch_ohlcv(self, symbol: str, interval: str, limit: int = 200):
-        url = f"{self.base_url}/v5/market/kline"
+    async def market_buy_quote(
+        self,
+        symbol: str,
+        quote_amount: float
+    ) -> Dict[str, Any]:
+        """
+        Executes market buy using quote currency amount (e.g., USDT amount).
+        Returns safe parsed order response.
+        """
+
+        url = f"{self.BASE_URL}/v5/order/create"
+        timestamp = int(time.time() * 1000)
 
         params = {
             "category": "spot",
             "symbol": symbol,
-            "interval": self._map_interval(interval),
-            "limit": limit
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as resp:
-                data = await resp.json()
-
-        if not isinstance(data, dict):
-            raise Exception(f"Invalid OHLCV response: {data}")
-
-        if data.get("retCode") != 0:
-            raise Exception(f"Bybit OHLCV error: {data}")
-
-        candles = data.get("result", {}).get("list", [])
-
-        parsed = []
-        for c in candles:
-            parsed.append([
-                int(c[0]),
-                float(c[1]),
-                float(c[2]),
-                float(c[3]),
-                float(c[4]),
-                float(c[5])
-            ])
-
-        return parsed[::-1]
-
-    # ==========================================================
-    # MARKET BUY (QUOTE SIZE)
-    # ==========================================================
-
-    async def market_buy_quote(self, symbol: str, quote_usdt: float):
-        url = f"{self.base_url}/v5/order/create"
-
-        body = {
-            "category": "spot",
-            "symbol": symbol,
             "side": "Buy",
             "orderType": "Market",
-            "qty": str(quote_usdt),
-            "marketUnit": "quoteCoin"
+            "quoteOrderQty": str(quote_amount),
+            "apiKey": self.api_key,
+            "timestamp": str(timestamp),
+            "recvWindow": str(self.recv_window),
         }
 
-        headers = self._sign(body)
+        params["sign"] = self._sign(params)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=body, headers=headers) as resp:
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        session = await self._get_session()
+
+        try:
+            async with session.post(url, json=params, headers=headers) as resp:
                 data = await resp.json()
 
-        log.info(f"BYBIT_RAW_RESPONSE {data}")
+                if data.get("retCode") != 0:
+                    raise Exception(f"Bybit order error: {data}")
 
-        if not isinstance(data, dict):
-            raise Exception(f"Invalid order response: {data}")
+                result = data.get("result", {})
 
-        if data.get("retCode") != 0:
-            raise Exception(
-                f"Order failed retCode={data.get('retCode')} "
-                f"msg={data.get('retMsg')}"
-            )
+                parsed = {
+                    "order_id": result.get("orderId"),
+                    "symbol": result.get("symbol"),
+                    "side": result.get("side"),
+                    "status": result.get("orderStatus"),
+                    "qty": result.get("qty"),
+                    "price": result.get("avgPrice"),
+                    "raw": result
+                }
 
-        result = data.get("result")
-        if not result:
-            raise Exception("Missing 'result' in order response")
+                logger.info(f"MARKET_BUY_OK {symbol} order_id={parsed['order_id']}")
 
-        order_id = result.get("orderId") or result.get("order_id")
-        if not order_id:
-            raise Exception(f"Missing orderId in response: {result}")
+                return parsed
 
-        class OrderResult:
-            def __init__(self, oid):
-                self.order_id = str(oid)
-                self.executed_qty = None
-                self.avg_price = None
-                self.status = "SUBMITTED"
+        except Exception as e:
+            logger.exception(f"MARKET_BUY_FAILED {symbol}: {e}")
+            raise
 
-        return OrderResult(order_id)
+
+# ==========================================================
+# Event Loop Safe Helper
+# ==========================================================
+
+async def create_bybit_client(
+    api_key: str,
+    api_secret: str
+) -> BybitREST:
+    """
+    Safe async constructor wrapper if needed.
+    """
+    return BybitREST(api_key, api_secret)
