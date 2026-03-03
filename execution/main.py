@@ -12,7 +12,7 @@ from execution.config import Settings
 from execution.database import TradeDB
 from execution.exchange.base import TokenBucket
 from execution.exchange.binance_rest import BinanceSpot
-from execution.exchange.bybit_rest import BybitSpot  # alias to BybitREST
+from execution.exchange.bybit_rest import BybitSpot
 from execution.exchange.binance_ws import BinanceWS
 from execution.exchange.bybit_ws import BybitWS
 from execution.ml.signal_model import MLSignalFilter
@@ -20,7 +20,6 @@ from execution.portfolio import Portfolio
 from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
 from execution.strategy.orderbook_alpha import compute_long_signal
-
 from ui.env_override import EnvOverrideBridge
 
 
@@ -53,6 +52,9 @@ class Engine:
         self.router = SmartRouter()
         self.override = EnvOverrideBridge()
 
+        # 🔥 FILTER DIAGNOSTIC TOGGLE (ENV BASED)
+        self.filter_diagnostic = os.getenv("FILTER_DIAGNOSTIC", "0") == "1"
+
         boot_cfg = self.override.read_override()
         log.info(f"BOOT_OVERRIDE_STATE {boot_cfg}")
 
@@ -70,7 +72,6 @@ class Engine:
             )
             self.ws = BinanceWS(s.BINANCE_WS_URL)
         else:
-            # ✅ Updated constructor (matches new BybitREST)
             self.ex = BybitSpot(
                 s.BYBIT_API_KEY,
                 s.BYBIT_API_SECRET,
@@ -88,7 +89,6 @@ class Engine:
 
         log.info(f"FETCH_OHLCV_DONE {symbol}")
 
-        # ✅ Updated schema: use "ts" instead of "close_time"
         df = pd.DataFrame(
             [
                 {
@@ -133,7 +133,21 @@ class Engine:
             self.s.ATR_PERIOD,
         )
 
-        if sig is None or sig.action != "BUY":
+        if sig is None:
+            return
+
+        # 🔎 FULL FILTER DIAGNOSTIC MODE
+        if self.filter_diagnostic:
+            log.info(
+                f"SIGNAL_MATRIX {symbol} "
+                f"action={getattr(sig, 'action', None)} "
+                f"ema={getattr(sig, 'ema_ok', None)} "
+                f"rsi={getattr(sig, 'rsi_ok', None)} "
+                f"atr={getattr(sig, 'atr_ok', None)} "
+                f"conf={getattr(sig, 'confidence', None)}"
+            )
+
+        if sig.action != "BUY":
             return
 
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
