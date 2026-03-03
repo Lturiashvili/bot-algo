@@ -194,7 +194,10 @@ async def create_bybit_client(
     api_key: str,
     api_secret: str
 ) -> BybitREST:
-    """
-    Safe async constructor wrapper if needed.
-    """
     return BybitREST(api_key, api_secret)
+
+
+# -------------------------------------------
+# Backward compatibility alias
+# -------------------------------------------
+BybitSpot = BybitREST
