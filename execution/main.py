@@ -64,7 +64,12 @@ class Engine:
 
     async def seed_history(self, symbol: str) -> None:
         print("SEED_HISTORY", symbol)
-        candles = await self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=600)
+        log.info(f"FETCH_OHLCV_START {symbol}")
+        candles = await asyncio.wait_for(
+            self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=600),
+            timeout=15
+        )
+        log.info(f"FETCH_OHLCV_DONE {symbol}")
         df = pd.DataFrame(
             [
                 {
