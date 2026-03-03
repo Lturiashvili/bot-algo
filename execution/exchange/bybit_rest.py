@@ -1,17 +1,56 @@
-# bybit_rest.py
-# Production-grade async Bybit REST client
-# Schema-normalized OHLCV + safe order execution
+"""
+Production-grade Bybit REST client (Spot V5)
+
+Features:
+- Async aiohttp session reuse
+- Interval normalization (Binance → Bybit)
+- Normalized OHLCV schema
+- Safe order parsing
+- Proper exception handling
+- Backward compatibility alias (BybitSpot)
+"""
 
 import aiohttp
 import asyncio
-import hmac
 import hashlib
-import time
+import hmac
 import logging
-from typing import List, Dict, Any, Optional
+import time
+from typing import Dict, List, Any, Optional
+
 
 logger = logging.getLogger(__name__)
 
+
+# ==========================================================
+# Interval Converter (Binance-style -> Bybit-style)
+# ==========================================================
+
+def _normalize_interval(interval: str) -> str:
+    """
+    Converts common Binance-style intervals to Bybit V5 format.
+    """
+    mapping = {
+        "1m": "1",
+        "3m": "3",
+        "5m": "5",
+        "15m": "15",
+        "30m": "30",
+        "1h": "60",
+        "2h": "120",
+        "4h": "240",
+        "6h": "360",
+        "12h": "720",
+        "1d": "D",
+        "1w": "W",
+        "1M": "M",
+    }
+    return mapping.get(interval, interval)
+
+
+# ==========================================================
+# Bybit REST Client
+# ==========================================================
 
 class BybitREST:
     BASE_URL = "https://api.bybit.com"
@@ -21,7 +60,7 @@ class BybitREST:
         api_key: str,
         api_secret: str,
         recv_window: int = 5000,
-        timeout: int = 10,
+        timeout: int = 15,
     ):
         self.api_key = api_key
         self.api_secret = api_secret
@@ -29,9 +68,9 @@ class BybitREST:
         self.timeout = timeout
         self._session: Optional[aiohttp.ClientSession] = None
 
-    # ==========================================================
+    # ------------------------------------------------------
     # Session Handling
-    # ==========================================================
+    # ------------------------------------------------------
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -43,9 +82,9 @@ class BybitREST:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    # ==========================================================
+    # ------------------------------------------------------
     # Signing
-    # ==========================================================
+    # ------------------------------------------------------
 
     def _sign(self, params: Dict[str, Any]) -> str:
         ordered = "&".join(f"{k}={params[k]}" for k in sorted(params))
@@ -55,36 +94,25 @@ class BybitREST:
             hashlib.sha256
         ).hexdigest()
 
-    # ==========================================================
-    # Public: Fetch OHLCV (Normalized Schema)
-    # ==========================================================
+    # ------------------------------------------------------
+    # Fetch OHLCV (Normalized)
+    # ------------------------------------------------------
 
     async def fetch_ohlcv(
         self,
         symbol: str,
-        interval: str = "1",
-        limit: int = 200
+        interval: str,
+        limit: int = 200,
     ) -> List[Dict[str, Any]]:
-        """
-        Returns normalized candles:
-        [
-            {
-                "ts": int,
-                "open": float,
-                "high": float,
-                "low": float,
-                "close": float,
-                "volume": float
-            }
-        ]
-        """
+
+        interval = _normalize_interval(interval)
 
         url = f"{self.BASE_URL}/v5/market/kline"
         params = {
             "category": "spot",
             "symbol": symbol,
             "interval": interval,
-            "limit": limit
+            "limit": limit,
         }
 
         session = await self._get_session()
@@ -101,7 +129,6 @@ class BybitREST:
                 normalized: List[Dict[str, Any]] = []
 
                 for c in raw:
-                    # Bybit returns reversed chronological order
                     normalized.append({
                         "ts": int(c[0]),
                         "open": float(c[1]),
@@ -111,10 +138,11 @@ class BybitREST:
                         "volume": float(c[5]),
                     })
 
-                # Sort ascending by timestamp (important for indicators)
                 normalized.sort(key=lambda x: x["ts"])
 
-                logger.info(f"FETCH_OHLCV_OK {symbol} candles={len(normalized)}")
+                logger.info(
+                    f"FETCH_OHLCV_OK {symbol} interval={interval} candles={len(normalized)}"
+                )
 
                 return normalized
 
@@ -122,19 +150,15 @@ class BybitREST:
             logger.exception(f"FETCH_OHLCV_FAILED {symbol}: {e}")
             raise
 
-    # ==========================================================
-    # Private: Market Buy (Quote-Based)
-    # ==========================================================
+    # ------------------------------------------------------
+    # Market Buy (Quote Amount)
+    # ------------------------------------------------------
 
     async def market_buy_quote(
         self,
         symbol: str,
-        quote_amount: float
+        quote_amount: float,
     ) -> Dict[str, Any]:
-        """
-        Executes market buy using quote currency amount (e.g., USDT amount).
-        Returns safe parsed order response.
-        """
 
         url = f"{self.BASE_URL}/v5/order/create"
         timestamp = int(time.time() * 1000)
@@ -152,14 +176,10 @@ class BybitREST:
 
         params["sign"] = self._sign(params)
 
-        headers = {
-            "Content-Type": "application/json"
-        }
-
         session = await self._get_session()
 
         try:
-            async with session.post(url, json=params, headers=headers) as resp:
+            async with session.post(url, json=params) as resp:
                 data = await resp.json()
 
                 if data.get("retCode") != 0:
@@ -173,11 +193,13 @@ class BybitREST:
                     "side": result.get("side"),
                     "status": result.get("orderStatus"),
                     "qty": result.get("qty"),
-                    "price": result.get("avgPrice"),
-                    "raw": result
+                    "avg_price": result.get("avgPrice"),
+                    "raw": result,
                 }
 
-                logger.info(f"MARKET_BUY_OK {symbol} order_id={parsed['order_id']}")
+                logger.info(
+                    f"MARKET_BUY_OK {symbol} order_id={parsed['order_id']}"
+                )
 
                 return parsed
 
@@ -187,7 +209,7 @@ class BybitREST:
 
 
 # ==========================================================
-# Event Loop Safe Helper
+# Async Constructor Helper
 # ==========================================================
 
 async def create_bybit_client(
@@ -197,7 +219,8 @@ async def create_bybit_client(
     return BybitREST(api_key, api_secret)
 
 
-# -------------------------------------------
-# Backward compatibility alias
-# -------------------------------------------
+# ==========================================================
+# Backward Compatibility Alias
+# ==========================================================
+
 BybitSpot = BybitREST
