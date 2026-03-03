@@ -12,7 +12,7 @@ from execution.config import Settings
 from execution.database import TradeDB
 from execution.exchange.base import TokenBucket
 from execution.exchange.binance_rest import BinanceSpot
-from execution.exchange.bybit_rest import BybitSpot
+from execution.exchange.bybit_rest import BybitSpot  # alias to BybitREST
 from execution.exchange.binance_ws import BinanceWS
 from execution.exchange.bybit_ws import BybitWS
 from execution.ml.signal_model import MLSignalFilter
@@ -51,7 +51,6 @@ class Engine:
 
         self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
         self.router = SmartRouter()
-
         self.override = EnvOverrideBridge()
 
         boot_cfg = self.override.read_override()
@@ -71,11 +70,10 @@ class Engine:
             )
             self.ws = BinanceWS(s.BINANCE_WS_URL)
         else:
+            # ✅ Updated constructor (matches new BybitREST)
             self.ex = BybitSpot(
-                s.BYBIT_BASE_URL,
                 s.BYBIT_API_KEY,
                 s.BYBIT_API_SECRET,
-                limiter,
             )
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
@@ -90,10 +88,11 @@ class Engine:
 
         log.info(f"FETCH_OHLCV_DONE {symbol}")
 
+        # ✅ Updated schema: use "ts" instead of "close_time"
         df = pd.DataFrame(
             [
                 {
-                    "ts": _ms_to_dt(c["close_time"]),
+                    "ts": _ms_to_dt(c["ts"]),
                     "open": c["open"],
                     "high": c["high"],
                     "low": c["low"],
@@ -155,10 +154,6 @@ class Engine:
                         return
 
         log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
-
-        # ==========================================
-        # 🚀 LIVE TEST EXECUTION (10 USDT)
-        # ==========================================
 
         try:
             test_quote_usdt = 10.0
