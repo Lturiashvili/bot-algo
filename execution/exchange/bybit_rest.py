@@ -5,15 +5,15 @@ Features:
 - Async aiohttp session reuse
 - Interval normalization (Binance → Bybit)
 - Normalized OHLCV schema
+- Proper V5 header-based authentication
 - Safe order parsing
-- Proper exception handling
 - Backward compatibility alias (BybitSpot)
 """
 
 import aiohttp
-import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import time
 from typing import Dict, List, Any, Optional
@@ -23,13 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 # ==========================================================
-# Interval Converter (Binance-style -> Bybit-style)
+# Interval Converter
 # ==========================================================
 
 def _normalize_interval(interval: str) -> str:
-    """
-    Converts common Binance-style intervals to Bybit V5 format.
-    """
     mapping = {
         "1m": "1",
         "3m": "3",
@@ -49,7 +46,7 @@ def _normalize_interval(interval: str) -> str:
 
 
 # ==========================================================
-# Bybit REST Client
+# Bybit REST Client (V5)
 # ==========================================================
 
 class BybitREST:
@@ -62,7 +59,10 @@ class BybitREST:
         recv_window: int = 5000,
         timeout: int = 15,
     ):
-        self.name = "bybit"   # ✅ ADD THIS
+        self.name = "bybit"
+
+        if not api_key or not api_secret:
+            raise RuntimeError("Bybit API credentials missing")
 
         self.api_key = api_key
         self.api_secret = api_secret
@@ -85,19 +85,7 @@ class BybitREST:
             await self._session.close()
 
     # ------------------------------------------------------
-    # Signing
-    # ------------------------------------------------------
-
-    def _sign(self, params: Dict[str, Any]) -> str:
-        ordered = "&".join(f"{k}={params[k]}" for k in sorted(params))
-        return hmac.new(
-            self.api_secret.encode(),
-            ordered.encode(),
-            hashlib.sha256
-        ).hexdigest()
-
-    # ------------------------------------------------------
-    # Fetch OHLCV (Normalized)
+    # Fetch OHLCV (Public)
     # ------------------------------------------------------
 
     async def fetch_ohlcv(
@@ -119,41 +107,36 @@ class BybitREST:
 
         session = await self._get_session()
 
-        try:
-            async with session.get(url, params=params) as resp:
-                data = await resp.json()
+        async with session.get(url, params=params) as resp:
+            data = await resp.json()
 
-                if data.get("retCode") != 0:
-                    raise Exception(f"Bybit error: {data}")
+        if data.get("retCode") != 0:
+            raise Exception(f"Bybit error: {data}")
 
-                raw = data["result"]["list"]
+        raw = data["result"]["list"]
 
-                normalized: List[Dict[str, Any]] = []
+        normalized: List[Dict[str, Any]] = []
 
-                for c in raw:
-                    normalized.append({
-                        "ts": int(c[0]),
-                        "open": float(c[1]),
-                        "high": float(c[2]),
-                        "low": float(c[3]),
-                        "close": float(c[4]),
-                        "volume": float(c[5]),
-                    })
+        for c in raw:
+            normalized.append({
+                "ts": int(c[0]),
+                "open": float(c[1]),
+                "high": float(c[2]),
+                "low": float(c[3]),
+                "close": float(c[4]),
+                "volume": float(c[5]),
+            })
 
-                normalized.sort(key=lambda x: x["ts"])
+        normalized.sort(key=lambda x: x["ts"])
 
-                logger.info(
-                    f"FETCH_OHLCV_OK {symbol} interval={interval} candles={len(normalized)}"
-                )
+        logger.info(
+            f"FETCH_OHLCV_OK {symbol} interval={interval} candles={len(normalized)}"
+        )
 
-                return normalized
-
-        except Exception as e:
-            logger.exception(f"FETCH_OHLCV_FAILED {symbol}: {e}")
-            raise
+        return normalized
 
     # ------------------------------------------------------
-    # Market Buy (Quote Amount)
+    # Market Buy (Quote Amount) — V5 Correct Auth
     # ------------------------------------------------------
 
     async def market_buy_quote(
@@ -163,62 +146,65 @@ class BybitREST:
     ) -> Dict[str, Any]:
 
         url = f"{self.BASE_URL}/v5/order/create"
-        timestamp = int(time.time() * 1000)
+        timestamp = str(int(time.time() * 1000))
 
-        params = {
+        body = {
             "category": "spot",
             "symbol": symbol,
             "side": "Buy",
             "orderType": "Market",
             "quoteOrderQty": str(quote_amount),
-            "apiKey": self.api_key,
-            "timestamp": str(timestamp),
-            "recvWindow": str(self.recv_window),
         }
 
-        params["sign"] = self._sign(params)
+        body_str = json.dumps(body, separators=(",", ":"))
+
+        # V5 signature format:
+        # timestamp + api_key + recv_window + body_json
+        sign_payload = timestamp + self.api_key + str(self.recv_window) + body_str
+
+        signature = hmac.new(
+            self.api_secret.encode(),
+            sign_payload.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-RECV-WINDOW": str(self.recv_window),
+            "Content-Type": "application/json",
+        }
 
         session = await self._get_session()
 
-        try:
-            async with session.post(url, json=params) as resp:
-                data = await resp.json()
+        async with session.post(
+            url,
+            headers=headers,
+            data=body_str
+        ) as resp:
+            data = await resp.json()
 
-                if data.get("retCode") != 0:
-                    raise Exception(f"Bybit order error: {data}")
+        if data.get("retCode") != 0:
+            raise Exception(f"Bybit order error: {data}")
 
-                result = data.get("result", {})
+        result = data.get("result", {})
 
-                parsed = {
-                    "order_id": result.get("orderId"),
-                    "symbol": result.get("symbol"),
-                    "side": result.get("side"),
-                    "status": result.get("orderStatus"),
-                    "qty": result.get("qty"),
-                    "avg_price": result.get("avgPrice"),
-                    "raw": result,
-                }
+        parsed = {
+            "order_id": result.get("orderId"),
+            "symbol": result.get("symbol"),
+            "side": result.get("side"),
+            "status": result.get("orderStatus"),
+            "qty": result.get("qty"),
+            "avg_price": result.get("avgPrice"),
+            "raw": result,
+        }
 
-                logger.info(
-                    f"MARKET_BUY_OK {symbol} order_id={parsed['order_id']}"
-                )
+        logger.info(
+            f"MARKET_BUY_OK {symbol} order_id={parsed['order_id']}"
+        )
 
-                return parsed
-
-        except Exception as e:
-            logger.exception(f"MARKET_BUY_FAILED {symbol}: {e}")
-            raise
-
-
-# ==========================================================
-# Async Constructor Helper
-# ==========================================================
-
-async def create_bybit_client(
-    api_key: str,
-    api_secret: str
-) -> BybitREST:
-    return BybitREST(api_key, api_secret)
+        return parsed
 
 
 # ==========================================================
