@@ -14,6 +14,9 @@ import pandas as pd
 
 from execution.indicators import ema, rsi, atr
 from execution.strategy.pressure_analyzer import log_pressure
+import logging
+log = logging.getLogger("strategy")
+
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,17 @@ def compute_long_signal(
         rsi_ok=rsi_ok,
         not_too_extended=not_too_extended,
         atr_ok=(atr_val > 0),
+    )
+
+
+    log.info(
+        "[BUY_MATRIX] %s | 15m=%d 30m=%d 1h=%d RSI=%d EXT=%d",
+        "UNKNOWN",
+        int(up15),
+        int(up30),
+        int(up1h),
+        int(rsi_ok),
+        int(not_too_extended),
     )
 
     if up15 and up30 and up1h and rsi_ok and not_too_extended:
