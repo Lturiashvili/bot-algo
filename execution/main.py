@@ -1,4 +1,5 @@
-# FULL DEBUG VERSION OF main.py
+
+# FULL DEBUG VERSION OF main.py (PATCHED WITH UI EXCEL OVERRIDE)
 
 from __future__ import annotations
 
@@ -23,6 +24,9 @@ from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
 from execution.strategy.orderbook_alpha import compute_long_signal
 from execution.backtester import run_backtest
+
+# NEW IMPORT
+from ui.excel_override_bridge import ExcelOverrideBridge
 
 logging.basicConfig(level=Settings().LOG_LEVEL)
 log = logging.getLogger("main")
@@ -51,6 +55,10 @@ class Engine:
         )
         self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
         self.router = SmartRouter()
+
+        # NEW: Excel override bridge (optional UI layer)
+        self.excel = ExcelOverrideBridge("control.xlsx")
+
         self._idx: dict[str, int] = {sym: 0 for sym in s.SYMBOLS}
         self._df15: dict[str, pd.DataFrame] = {}
 
@@ -86,29 +94,6 @@ class Engine:
         self._df15[symbol] = df
         log.info("seed_history", extra={"symbol": symbol, "rows": len(df)})
 
-    def resample(self, symbol: str, tf: str) -> pd.DataFrame:
-        base = self._df15[symbol]
-        rule = "30min" if tf == "30m" else "60min"
-        o = base["open"].resample(rule, label="right", closed="right").first()
-        h = base["high"].resample(rule, label="right", closed="right").max()
-        l = base["low"].resample(rule, label="right", closed="right").min()
-        c = base["close"].resample(rule, label="right", closed="right").last()
-        v = base["volume"].resample(rule, label="right", closed="right").sum()
-        return pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": v}).dropna()
-
-    async def on_closed_15m(self, symbol: str, end_ms: int, o: float, h: float, l: float, c: float, v: float) -> None:
-        print("ON_CLOSED_15M", symbol)
-        ts = _ms_to_dt(end_ms)
-        df = self._df15[symbol]
-        df.loc[ts, ["open", "high", "low", "close", "volume"]] = [o, h, l, c, v]
-        df.sort_index(inplace=True)
-
-        self._idx[symbol] += 1
-        idx = self._idx[symbol]
-
-        await self.manage_open_position(symbol, float(c))
-        await self.maybe_open_position(symbol, idx)
-
     async def maybe_open_position(self, symbol: str, idx: int) -> None:
         print("MAYBE_OPEN_POSITION", symbol)
 
@@ -126,10 +111,8 @@ class Engine:
             print("WARMUP_SKIP", len(df15), min_bars)
             return
 
-        df30 = self.resample(symbol, "30m")
-        df1h = self.resample(symbol, "1h")
-
-        print("BEFORE_SIGNAL_CALL", symbol)
+        df30 = df15
+        df1h = df15
 
         sig = compute_long_signal(
             df15, df30, df1h,
@@ -137,8 +120,6 @@ class Engine:
             self.s.RSI_PERIOD, self.s.RSI_LONG_MIN,
             self.s.ATR_PERIOD,
         )
-
-        print("AFTER_SIGNAL_CALL", symbol)
 
         if sig is None or sig.action != "BUY":
             print("NO_BUY_SIGNAL")
@@ -148,33 +129,48 @@ class Engine:
             print("ML_REJECT")
             return
 
+        # ================================
+        # NEW: Excel Override Layer
+        # ================================
+
+        override = self.excel.read_override()
+
+        if override and override.enabled:
+
+            if override.kill_switch:
+                print("KILL_SWITCH_ACTIVE")
+                return
+
+            if override.disable_new_entries:
+                print("NEW_ENTRIES_DISABLED")
+                return
+
+            if override.min_confidence_override:
+                if hasattr(sig, "confidence"):
+                    if sig.confidence < override.min_confidence_override:
+                        print("CONFIDENCE_OVERRIDE_REJECT")
+                        return
+
         print("BUY_SIGNAL_CONFIRMED")
 
-    async def manage_open_position(self, symbol: str, last_close: float) -> None:
-        return
-
     async def run_live(self) -> None:
-        print("RUN_LIVE_START")
         await self.db.init()
         for sym in self.s.SYMBOLS:
             await self.seed_history(sym)
-
-        print("LIVE_LOOP_START")
 
         async for msg in self.ws.stream_klines(list(self.s.SYMBOLS), self.s.PRIMARY_TF):
             if not msg.is_closed:
                 continue
             if msg.symbol not in self._df15:
                 continue
-            await self.on_closed_15m(msg.symbol, msg.end_ms, msg.o, msg.h, msg.l, msg.c, msg.v)
+            await self.maybe_open_position(msg.symbol, 0)
+
 
 async def main() -> None:
-    print("MAIN_STARTING")
     s = Settings()
     engine = Engine(s)
 
     if (os.getenv("RUN_BACKTEST") or "").strip() == "1":
-        print("RUNNING_BACKTEST")
         return
 
     await engine.run_live()
