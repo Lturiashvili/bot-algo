@@ -33,9 +33,9 @@
             log.info(f"FILTER_DEBUG {symbol} BLOCKED: signal_none")
             return
 
-        # ------------------------------------------
+        # -----------------------------
         # Detailed Filter Matrix Debug
-        # ------------------------------------------
+        # -----------------------------
 
         ema_ok = getattr(sig, "ema_ok", None)
         rsi_ok = getattr(sig, "rsi_ok", None)
@@ -72,9 +72,9 @@
                         log.info(f"FILTER_DEBUG {symbol} BLOCKED: env_confidence_reject")
                         return
 
-        # ------------------------------------------
+        # -----------------------------
         # BUY CONFIRMED
-        # ------------------------------------------
+        # -----------------------------
 
         log.info(
             f"BUY_SIGNAL_CONFIRMED {symbol} "
