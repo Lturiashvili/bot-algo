@@ -7,6 +7,7 @@ Features:
 - Normalized OHLCV schema
 - Proper V5 header-based authentication
 - Safe order parsing
+- Private API ping
 - Backward compatibility alias (BybitSpot)
 """
 
@@ -85,6 +86,61 @@ class BybitREST:
             await self._session.close()
 
     # ------------------------------------------------------
+    # Private Ping — Wallet Balance (V5 Auth Check)
+    # ------------------------------------------------------
+
+    async def private_ping(self) -> Dict[str, Any]:
+        """
+        Simple authenticated GET call to verify API permissions.
+        Uses /v5/account/wallet-balance
+        """
+
+        endpoint = "/v5/account/wallet-balance"
+        url = f"{self.BASE_URL}{endpoint}"
+
+        timestamp = str(int(time.time() * 1000))
+        query_string = "accountType=UNIFIED"
+
+        # V5 GET signature format:
+        # timestamp + api_key + recv_window + query_string
+        sign_payload = (
+            timestamp
+            + self.api_key
+            + str(self.recv_window)
+            + query_string
+        )
+
+        signature = hmac.new(
+            self.api_secret.encode(),
+            sign_payload.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-RECV-WINDOW": str(self.recv_window),
+        }
+
+        session = await self._get_session()
+
+        async with session.get(
+            url,
+            headers=headers,
+            params={"accountType": "UNIFIED"},
+        ) as resp:
+            data = await resp.json()
+
+        if data.get("retCode") != 0:
+            logger.error(f"PRIVATE_PING_ERROR {data}")
+            raise Exception(f"Bybit private ping error: {data}")
+
+        logger.info("PRIVATE_PING_OK")
+
+        return data
+
+    # ------------------------------------------------------
     # Fetch OHLCV (Public)
     # ------------------------------------------------------
 
@@ -160,7 +216,12 @@ class BybitREST:
 
         # V5 signature format:
         # timestamp + api_key + recv_window + body_json
-        sign_payload = timestamp + self.api_key + str(self.recv_window) + body_str
+        sign_payload = (
+            timestamp
+            + self.api_key
+            + str(self.recv_window)
+            + body_str
+        )
 
         signature = hmac.new(
             self.api_secret.encode(),
@@ -181,11 +242,12 @@ class BybitREST:
         async with session.post(
             url,
             headers=headers,
-            data=body_str
+            data=body_str,
         ) as resp:
             data = await resp.json()
 
         if data.get("retCode") != 0:
+            logger.error(f"MARKET_BUY_ERROR {data}")
             raise Exception(f"Bybit order error: {data}")
 
         result = data.get("result", {})
