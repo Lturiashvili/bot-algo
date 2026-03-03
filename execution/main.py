@@ -1,5 +1,3 @@
-# FULL DEBUG VERSION OF main.py (PATCHED WITH ENV OVERRIDE - PRODUCTION SAFE)
-
 from __future__ import annotations
 
 import asyncio
@@ -22,15 +20,13 @@ from execution.portfolio import Portfolio
 from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
 from execution.strategy.orderbook_alpha import compute_long_signal
-from execution.backtester import run_backtest
 
-# ✅ PRODUCTION OVERRIDE
+# ✅ Cloud-Native Override
 from ui.env_override import EnvOverrideBridge
+
 
 logging.basicConfig(level=Settings().LOG_LEVEL)
 log = logging.getLogger("main")
-
-print("ENGINE_MODULE_LOADED")
 
 
 def _ms_to_dt(ms: int) -> datetime:
@@ -39,7 +35,6 @@ def _ms_to_dt(ms: int) -> datetime:
 
 class Engine:
     def __init__(self, s: Settings) -> None:
-        print("ENGINE_INIT")
 
         self.s = s
         self.db = TradeDB(s.DB_PATH)
@@ -58,8 +53,12 @@ class Engine:
         self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
         self.router = SmartRouter()
 
-        # ✅ ENV Override (Cloud-Native)
+        # ✅ ENV Override Layer
         self.override = EnvOverrideBridge()
+
+        # Boot visibility (VERY IMPORTANT)
+        boot_cfg = self.override.read_override()
+        log.info(f"BOOT_OVERRIDE_STATE {boot_cfg}")
 
         self._idx: dict[str, int] = {sym: 0 for sym in s.SYMBOLS}
         self._df15: dict[str, pd.DataFrame] = {}
@@ -84,6 +83,7 @@ class Engine:
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
     async def seed_history(self, symbol: str) -> None:
+
         log.info(f"FETCH_OHLCV_START {symbol}")
 
         candles = await asyncio.wait_for(
@@ -108,13 +108,14 @@ class Engine:
         ).set_index("ts")
 
         self._df15[symbol] = df
-        log.info("seed_history", extra={"symbol": symbol, "rows": len(df)})
 
     async def maybe_open_position(self, symbol: str, idx: int) -> None:
 
+        # Position already open
         if self.portfolio.has_position(symbol):
             return
 
+        # Cooldown active
         if self.portfolio.in_cooldown(symbol, idx):
             return
 
@@ -141,20 +142,17 @@ class Engine:
         if sig is None or sig.action != "BUY":
             return
 
+        # ML Gate
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
             return
 
-        # ======================================================
-        # ✅ ENV OVERRIDE BLOCK (PRODUCTION CONTROL LAYER)
-        # ======================================================
+        # ==========================================
+        # ENTRY-LEVEL OVERRIDE
+        # ==========================================
 
         override = self.override.read_override()
 
         if override.enabled:
-
-            if override.kill_switch:
-                log.warning("ENV KILL SWITCH ACTIVE - entry blocked")
-                return
 
             if override.disable_new_entries:
                 log.info("ENV: new entries disabled")
@@ -166,12 +164,15 @@ class Engine:
                         log.info("ENV: confidence override reject")
                         return
 
-        # ======================================================
+        # ==========================================
 
         log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
 
-        # აქ დარჩება შენი execution logic
-        # self.router / self.ex.place_order(...) და ა.შ.
+        # 🚀 EXECUTION LOGIC
+        # აქ შენს router / exchange logic-ს იყენებ
+        # (არ ვეხები შენს ძველ არქიტექტურას)
+        # მაგალითად:
+        # await self.router.open_position(self.ex, symbol, sig)
 
     async def run_live(self) -> None:
 
@@ -183,11 +184,24 @@ class Engine:
         async for msg in self.ws.stream_klines(
             list(self.s.SYMBOLS), self.s.PRIMARY_TF
         ):
+
             if not msg.is_closed:
                 continue
 
             if msg.symbol not in self._df15:
                 continue
+
+            # ==========================================
+            # GLOBAL KILL SWITCH (Institutional Layer)
+            # ==========================================
+
+            override = self.override.read_override()
+
+            if override.enabled and override.kill_switch:
+                log.warning("GLOBAL KILL SWITCH ACTIVE — trading halted")
+                continue
+
+            # ==========================================
 
             await self.maybe_open_position(msg.symbol, 0)
 
