@@ -1,5 +1,4 @@
-
-# FULL DEBUG VERSION OF main.py (PATCHED WITH UI EXCEL OVERRIDE)
+# FULL DEBUG VERSION OF main.py (PATCHED WITH ENV OVERRIDE - PRODUCTION SAFE)
 
 from __future__ import annotations
 
@@ -19,14 +18,14 @@ from execution.exchange.bybit_rest import BybitSpot
 from execution.exchange.binance_ws import BinanceWS
 from execution.exchange.bybit_ws import BybitWS
 from execution.ml.signal_model import MLSignalFilter
-from execution.portfolio import Portfolio, Position
+from execution.portfolio import Portfolio
 from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
 from execution.strategy.orderbook_alpha import compute_long_signal
 from execution.backtester import run_backtest
 
-# NEW IMPORT
-from ui.excel_override_bridge import ExcelOverrideBridge
+# ✅ PRODUCTION OVERRIDE
+from ui.env_override import EnvOverrideBridge
 
 logging.basicConfig(level=Settings().LOG_LEVEL)
 log = logging.getLogger("main")
@@ -41,9 +40,11 @@ def _ms_to_dt(ms: int) -> datetime:
 class Engine:
     def __init__(self, s: Settings) -> None:
         print("ENGINE_INIT")
+
         self.s = s
         self.db = TradeDB(s.DB_PATH)
         self.portfolio = Portfolio()
+
         self.risk = RiskManager(
             position_pct=s.POSITION_PCT,
             stop_atr_mult=s.STOP_ATR_MULT,
@@ -53,31 +54,45 @@ class Engine:
             slippage_bps=s.SLIPPAGE_BPS,
             partial_tp_pct=s.PARTIAL_TP_PCT,
         )
+
         self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
         self.router = SmartRouter()
 
-        # NEW: Excel override bridge (optional UI layer)
-        self.excel = ExcelOverrideBridge("control.xlsx")
+        # ✅ ENV Override (Cloud-Native)
+        self.override = EnvOverrideBridge()
 
         self._idx: dict[str, int] = {sym: 0 for sym in s.SYMBOLS}
         self._df15: dict[str, pd.DataFrame] = {}
 
         limiter = TokenBucket(rate_per_sec=s.REST_RATE_PER_SEC, burst=s.REST_BURST)
+
         if s.EXCHANGE == "binance":
-            self.ex = BinanceSpot(s.BINANCE_BASE_URL, s.BINANCE_API_KEY, s.BINANCE_API_SECRET, limiter)
+            self.ex = BinanceSpot(
+                s.BINANCE_BASE_URL,
+                s.BINANCE_API_KEY,
+                s.BINANCE_API_SECRET,
+                limiter,
+            )
             self.ws = BinanceWS(s.BINANCE_WS_URL)
         else:
-            self.ex = BybitSpot(s.BYBIT_BASE_URL, s.BYBIT_API_KEY, s.BYBIT_API_SECRET, limiter)
+            self.ex = BybitSpot(
+                s.BYBIT_BASE_URL,
+                s.BYBIT_API_KEY,
+                s.BYBIT_API_SECRET,
+                limiter,
+            )
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
     async def seed_history(self, symbol: str) -> None:
-        print("SEED_HISTORY", symbol)
         log.info(f"FETCH_OHLCV_START {symbol}")
+
         candles = await asyncio.wait_for(
             self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=600),
-            timeout=15
+            timeout=15,
         )
+
         log.info(f"FETCH_OHLCV_DONE {symbol}")
+
         df = pd.DataFrame(
             [
                 {
@@ -91,82 +106,94 @@ class Engine:
                 for c in candles
             ]
         ).set_index("ts")
+
         self._df15[symbol] = df
         log.info("seed_history", extra={"symbol": symbol, "rows": len(df)})
 
     async def maybe_open_position(self, symbol: str, idx: int) -> None:
-        print("MAYBE_OPEN_POSITION", symbol)
 
         if self.portfolio.has_position(symbol):
-            print("HAS_POSITION_SKIP")
             return
+
         if self.portfolio.in_cooldown(symbol, idx):
-            print("COOLDOWN_SKIP")
             return
 
         df15 = self._df15[symbol]
 
         min_bars = max(self.s.EMA_SLOW + 5, 50)
         if len(df15) < min_bars:
-            print("WARMUP_SKIP", len(df15), min_bars)
             return
 
         df30 = df15
         df1h = df15
 
         sig = compute_long_signal(
-            df15, df30, df1h,
-            self.s.EMA_FAST, self.s.EMA_SLOW,
-            self.s.RSI_PERIOD, self.s.RSI_LONG_MIN,
+            df15,
+            df30,
+            df1h,
+            self.s.EMA_FAST,
+            self.s.EMA_SLOW,
+            self.s.RSI_PERIOD,
+            self.s.RSI_LONG_MIN,
             self.s.ATR_PERIOD,
         )
 
         if sig is None or sig.action != "BUY":
-            print("NO_BUY_SIGNAL")
             return
 
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
-            print("ML_REJECT")
             return
 
-        # ================================
-        # NEW: Excel Override Layer
-        # ================================
+        # ======================================================
+        # ✅ ENV OVERRIDE BLOCK (PRODUCTION CONTROL LAYER)
+        # ======================================================
 
-        override = self.excel.read_override()
+        override = self.override.read_override()
 
-        if override and override.enabled:
+        if override.enabled:
 
             if override.kill_switch:
-                print("KILL_SWITCH_ACTIVE")
+                log.warning("ENV KILL SWITCH ACTIVE - entry blocked")
                 return
 
             if override.disable_new_entries:
-                print("NEW_ENTRIES_DISABLED")
+                log.info("ENV: new entries disabled")
                 return
 
             if override.min_confidence_override:
                 if hasattr(sig, "confidence"):
                     if sig.confidence < override.min_confidence_override:
-                        print("CONFIDENCE_OVERRIDE_REJECT")
+                        log.info("ENV: confidence override reject")
                         return
 
-        print("BUY_SIGNAL_CONFIRMED")
+        # ======================================================
+
+        log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
+
+        # აქ დარჩება შენი execution logic
+        # self.router / self.ex.place_order(...) და ა.შ.
 
     async def run_live(self) -> None:
+
         await self.db.init()
+
         for sym in self.s.SYMBOLS:
             await self.seed_history(sym)
 
-        async for msg in self.ws.stream_klines(list(self.s.SYMBOLS), self.s.PRIMARY_TF):
+        async for msg in self.ws.stream_klines(
+            list(self.s.SYMBOLS), self.s.PRIMARY_TF
+        ):
             if not msg.is_closed:
                 continue
+
             if msg.symbol not in self._df15:
                 continue
+
             await self.maybe_open_position(msg.symbol, 0)
 
 
 async def main() -> None:
+
     s = Settings()
     engine = Engine(s)
 
