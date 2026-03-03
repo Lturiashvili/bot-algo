@@ -3,7 +3,6 @@ import logging
 import time
 import hmac
 import hashlib
-import json
 from urllib.parse import urlencode
 
 log = logging.getLogger("bybit_rest")
@@ -17,15 +16,33 @@ class BybitSpot:
         self.limiter = limiter
 
     # ==========================================================
-    # INTERNAL: SIGNING
+    # INTERVAL MAPPING (CRITICAL FIX)
+    # ==========================================================
+
+    def _map_interval(self, interval: str) -> str:
+        mapping = {
+            "1m": "1",
+            "3m": "3",
+            "5m": "5",
+            "15m": "15",
+            "30m": "30",
+            "1h": "60",
+            "2h": "120",
+            "4h": "240",
+            "1d": "D"
+        }
+        return mapping.get(interval, interval)
+
+    # ==========================================================
+    # SIGNING
     # ==========================================================
 
     def _sign(self, params: dict) -> dict:
         timestamp = str(int(time.time() * 1000))
         recv_window = "5000"
 
-        params_str = urlencode(sorted(params.items()))
-        payload = timestamp + self.api_key + recv_window + params_str
+        param_str = urlencode(sorted(params.items()))
+        payload = timestamp + self.api_key + recv_window + param_str
 
         signature = hmac.new(
             self.api_secret,
@@ -33,15 +50,13 @@ class BybitSpot:
             hashlib.sha256
         ).hexdigest()
 
-        headers = {
+        return {
             "X-BAPI-API-KEY": self.api_key,
             "X-BAPI-SIGN": signature,
             "X-BAPI-TIMESTAMP": timestamp,
             "X-BAPI-RECV-WINDOW": recv_window,
             "Content-Type": "application/json"
         }
-
-        return headers
 
     # ==========================================================
     # FETCH OHLCV
@@ -53,7 +68,7 @@ class BybitSpot:
         params = {
             "category": "spot",
             "symbol": symbol,
-            "interval": interval,
+            "interval": self._map_interval(interval),
             "limit": limit
         }
 
@@ -67,22 +82,20 @@ class BybitSpot:
         if data.get("retCode") != 0:
             raise Exception(f"Bybit OHLCV error: {data}")
 
-        result = data.get("result", {})
-        candles = result.get("list", [])
+        candles = data.get("result", {}).get("list", [])
 
-        # Normalize structure
         parsed = []
         for c in candles:
             parsed.append([
-                int(c[0]),        # timestamp
-                float(c[1]),      # open
-                float(c[2]),      # high
-                float(c[3]),      # low
-                float(c[4]),      # close
-                float(c[5])       # volume
+                int(c[0]),
+                float(c[1]),
+                float(c[2]),
+                float(c[3]),
+                float(c[4]),
+                float(c[5])
             ])
 
-        return parsed[::-1]  # oldest → newest
+        return parsed[::-1]
 
     # ==========================================================
     # MARKET BUY (QUOTE SIZE)
@@ -123,9 +136,8 @@ class BybitSpot:
 
         order_id = result.get("orderId") or result.get("order_id")
         if not order_id:
-            raise Exception(f"Missing orderId field: {result}")
+            raise Exception(f"Missing orderId in response: {result}")
 
-        # Unified return object
         class OrderResult:
             def __init__(self, oid):
                 self.order_id = str(oid)
