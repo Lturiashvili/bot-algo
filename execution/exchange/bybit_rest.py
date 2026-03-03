@@ -62,6 +62,8 @@ class BybitREST:
         recv_window: int = 5000,
         timeout: int = 15,
     ):
+        self.name = "bybit"   # ✅ ADD THIS
+
         self.api_key = api_key
         self.api_secret = api_secret
         self.recv_window = recv_window
