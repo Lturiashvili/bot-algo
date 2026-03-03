@@ -21,7 +21,6 @@ from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
 from execution.strategy.orderbook_alpha import compute_long_signal
 
-# ✅ Cloud-Native Override
 from ui.env_override import EnvOverrideBridge
 
 
@@ -53,10 +52,8 @@ class Engine:
         self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
         self.router = SmartRouter()
 
-        # ✅ ENV Override Layer
         self.override = EnvOverrideBridge()
 
-        # Boot visibility (VERY IMPORTANT)
         boot_cfg = self.override.read_override()
         log.info(f"BOOT_OVERRIDE_STATE {boot_cfg}")
 
@@ -111,11 +108,9 @@ class Engine:
 
     async def maybe_open_position(self, symbol: str, idx: int) -> None:
 
-        # Position already open
         if self.portfolio.has_position(symbol):
             return
 
-        # Cooldown active
         if self.portfolio.in_cooldown(symbol, idx):
             return
 
@@ -142,13 +137,8 @@ class Engine:
         if sig is None or sig.action != "BUY":
             return
 
-        # ML Gate
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
             return
-
-        # ==========================================
-        # ENTRY-LEVEL OVERRIDE
-        # ==========================================
 
         override = self.override.read_override()
 
@@ -164,15 +154,33 @@ class Engine:
                         log.info("ENV: confidence override reject")
                         return
 
-        # ==========================================
-
         log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
 
-        # 🚀 EXECUTION LOGIC
-        # აქ შენს router / exchange logic-ს იყენებ
-        # (არ ვეხები შენს ძველ არქიტექტურას)
-        # მაგალითად:
-        # await self.router.open_position(self.ex, symbol, sig)
+        # ==========================================
+        # 🚀 LIVE TEST EXECUTION (10 USDT)
+        # ==========================================
+
+        try:
+            test_quote_usdt = 10.0
+
+            log.info(f"EXECUTION_START {symbol} size={test_quote_usdt}USDT")
+
+            order = await self.router.open_long(
+                self.ex,
+                symbol,
+                test_quote_usdt
+            )
+
+            log.info(
+                f"EXECUTION_DONE {symbol} "
+                f"order_id={getattr(order, 'order_id', None)} "
+                f"qty={getattr(order, 'executed_qty', None)} "
+                f"avg_price={getattr(order, 'avg_price', None)} "
+                f"status={getattr(order, 'status', None)}"
+            )
+
+        except Exception as e:
+            log.exception(f"EXECUTION_FAILED {symbol} err={e}")
 
     async def run_live(self) -> None:
 
@@ -191,17 +199,11 @@ class Engine:
             if msg.symbol not in self._df15:
                 continue
 
-            # ==========================================
-            # GLOBAL KILL SWITCH (Institutional Layer)
-            # ==========================================
-
             override = self.override.read_override()
 
             if override.enabled and override.kill_switch:
                 log.warning("GLOBAL KILL SWITCH ACTIVE — trading halted")
                 continue
-
-            # ==========================================
 
             await self.maybe_open_position(msg.symbol, 0)
 
