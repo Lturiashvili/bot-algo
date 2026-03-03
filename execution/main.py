@@ -52,7 +52,6 @@ class Engine:
         self.router = SmartRouter()
         self.override = EnvOverrideBridge()
 
-        # 🔥 FILTER DIAGNOSTIC TOGGLE (ENV BASED)
         self.filter_diagnostic = os.getenv("FILTER_DIAGNOSTIC", "0") == "1"
 
         boot_cfg = self.override.read_override()
@@ -136,15 +135,53 @@ class Engine:
         if sig is None:
             return
 
-        # 🔎 FULL FILTER DIAGNOSTIC MODE
+        # =====================================================
+        # INSTITUTIONAL FILTER AUDIT MATRIX
+        # =====================================================
         if self.filter_diagnostic:
+
+            last_row = df15.iloc[-1]
+            close_price = float(last_row["close"])
+
+            ema_fast_15 = float(
+                df15["close"].ewm(span=self.s.EMA_FAST).mean().iloc[-1]
+            )
+            ema_slow_15 = float(
+                df15["close"].ewm(span=self.s.EMA_SLOW).mean().iloc[-1]
+            )
+
+            delta = df15["close"].diff()
+            gain = delta.clip(lower=0).rolling(self.s.RSI_PERIOD).mean()
+            loss = (-delta.clip(upper=0)).rolling(self.s.RSI_PERIOD).mean()
+            rs = gain / loss
+            rsi_15 = float((100 - (100 / (1 + rs))).iloc[-1])
+
+            high = df15["high"]
+            low = df15["low"]
+            close = df15["close"]
+
+            tr = pd.concat([
+                high - low,
+                (high - close.shift()).abs(),
+                (low - close.shift()).abs()
+            ], axis=1).max(axis=1)
+
+            atr_15 = float(tr.rolling(self.s.ATR_PERIOD).mean().iloc[-1])
+            ts = df15.index[-1].isoformat()
+
             log.info(
-                f"SIGNAL_MATRIX {symbol} "
+                f"FILTER_AUDIT {symbol} "
+                f"ts={ts} "
                 f"action={getattr(sig, 'action', None)} "
-                f"ema={getattr(sig, 'ema_ok', None)} "
-                f"rsi={getattr(sig, 'rsi_ok', None)} "
-                f"atr={getattr(sig, 'atr_ok', None)} "
-                f"conf={getattr(sig, 'confidence', None)}"
+                f"close={close_price:.2f} "
+                f"ema_fast_15={ema_fast_15:.2f} "
+                f"ema_slow_15={ema_slow_15:.2f} "
+                f"rsi_15={rsi_15:.2f} "
+                f"atr_15={atr_15:.2f} "
+                f"ema_ok={getattr(sig, 'ema_ok', None)} "
+                f"rsi_ok={getattr(sig, 'rsi_ok', None)} "
+                f"atr_ok={getattr(sig, 'atr_ok', None)} "
+                f"confidence={getattr(sig, 'confidence', None)}"
             )
 
         if sig.action != "BUY":
@@ -156,7 +193,6 @@ class Engine:
         override = self.override.read_override()
 
         if override.enabled:
-
             if override.disable_new_entries:
                 log.info("ENV: new entries disabled")
                 return
