@@ -23,7 +23,6 @@ from execution.position_manager import PositionManager
 from execution.strategy.orderbook_alpha import compute_long_signal
 from ui.env_override import EnvOverrideBridge
 
-
 logging.basicConfig(
     level=Settings().LOG_LEVEL,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -58,40 +57,39 @@ class Engine:
         self.router = SmartRouter()
         self.override = EnvOverrideBridge()
 
-        # Execution Brain
         self.execution_brain = ExecutionBrain(s, self.portfolio)
 
-        # Position Manager (EXIT ENGINE)
         self.position_manager = PositionManager(
             tp_pct=0.002,
             sl_pct=0.01,
             max_bars=30,
         )
 
-        self.filter_diagnostic = os.getenv("FILTER_DIAGNOSTIC", "0") == "1"
-
-        boot_cfg = self.override.read_override()
-        log.info(f"BOOT_OVERRIDE_STATE {boot_cfg}")
-
         self._idx: dict[str, int] = {sym: 0 for sym in s.SYMBOLS}
         self._df15: dict[str, pd.DataFrame] = {}
+
+        self._execution_lock: set[str] = set()
 
         limiter = TokenBucket(rate_per_sec=s.REST_RATE_PER_SEC, burst=s.REST_BURST)
 
         if s.EXCHANGE == "binance":
+
             self.ex = BinanceSpot(
                 s.BINANCE_BASE_URL,
                 s.BINANCE_API_KEY,
                 s.BINANCE_API_SECRET,
                 limiter,
             )
+
             self.ws = BinanceWS(s.BINANCE_WS_URL)
 
         else:
+
             self.ex = BybitSpot(
                 s.BYBIT_API_KEY,
                 s.BYBIT_API_SECRET,
             )
+
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
     async def seed_history(self, symbol: str) -> None:
@@ -121,7 +119,35 @@ class Engine:
 
         self._df15[symbol] = df
 
+    async def sync_positions(self):
+
+        try:
+
+            balances = await self.ex.fetch_balances()
+
+            for asset, amount in balances.items():
+
+                if amount <= 0:
+                    continue
+
+                symbol = f"{asset}USDT"
+
+                if symbol in self.s.SYMBOLS:
+
+                    self.portfolio.sync_position(
+                        symbol=symbol,
+                        qty=amount,
+                        entry_price=None
+                    )
+
+        except Exception as e:
+
+            log.warning(f"POSITION_SYNC_FAILED {e}")
+
     async def maybe_open_position(self, symbol: str, idx: int) -> None:
+
+        if symbol in self._execution_lock:
+            return
 
         if self.portfolio.has_position(symbol):
             return
@@ -131,17 +157,13 @@ class Engine:
 
         df15 = self._df15[symbol]
 
-        min_bars = max(self.s.EMA_SLOW + 5, 50)
-        if len(df15) < min_bars:
+        if len(df15) < 50:
             return
-
-        df30 = df15
-        df1h = df15
 
         sig = compute_long_signal(
             df15,
-            df30,
-            df1h,
+            df15,
+            df15,
             self.s.EMA_FAST,
             self.s.EMA_SLOW,
             self.s.RSI_PERIOD,
@@ -149,121 +171,184 @@ class Engine:
             self.s.ATR_PERIOD,
         )
 
-        if sig is None:
-            return
-
-        if sig.action != "BUY":
+        if sig is None or sig.action != "BUY":
             return
 
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
             return
 
-        override = self.override.read_override()
+        open_positions = self.portfolio.count_open_positions()
 
-        if override.enabled:
-
-            if override.disable_new_entries:
-                log.info("ENV: new entries disabled")
-                return
-
-            if override.min_confidence_override:
-                if hasattr(sig, "confidence"):
-                    if sig.confidence < override.min_confidence_override:
-                        log.info("ENV: confidence override reject")
-                        return
-
-        log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
-
-        decision = self.execution_brain.evaluate_trade(
-            symbol=symbol,
-            signal="BUY",
-            signal_score=getattr(sig, "confidence", 50),
-            regime="NEUTRAL"
-        )
-
-        if not decision:
-            log.info(f"EXECUTION_BLOCKED_BY_BRAIN {symbol}")
+        if open_positions >= 5:
+            log.info("MAX_POSITIONS_GUARD")
             return
+
+        capital = await self.ex.fetch_usdt_balance()
+
+        if capital < 3:
+            log.warning("INSUFFICIENT_CAPITAL")
+            return
+
+        max_positions = 5
+        remaining_slots = max_positions - open_positions
+
+        if remaining_slots <= 0:
+            return
+
+        position_size = capital / remaining_slots
+
+        self._execution_lock.add(symbol)
 
         try:
 
-            test_quote_usdt = 5.0
-
-            log.info(f"EXECUTION_START {symbol} size={test_quote_usdt}USDT")
+            log.info(f"EXECUTION_START {symbol} size={position_size}")
 
             order = await self.router.open_long(
                 self.ex,
                 symbol,
-                test_quote_usdt
+                position_size
             )
 
-            log.info(
-                f"EXECUTION_DONE {symbol} "
-                f"order_id={getattr(order, 'order_id', None)} "
-                f"qty={getattr(order, 'executed_qty', None)} "
-                f"avg_price={getattr(order, 'avg_price', None)} "
-                f"status={getattr(order, 'status', None)}"
+            if not order:
+                log.warning("ORDER_FAILED")
+                return
+
+            qty = getattr(order, "executed_qty", None)
+            price = getattr(order, "avg_price", None)
+
+            if not qty or not price:
+                log.warning("INVALID_ORDER_RESPONSE")
+                return
+
+            log.info(f"BUY_EXECUTED {symbol} qty={qty} price={price}")
+
+            self.portfolio.open_position(
+                symbol=symbol,
+                qty=qty,
+                entry_price=price,
+                entry_idx=idx,
             )
+
+            # ===============================
+            # OCO SAFETY LAYER
+            # ===============================
+
+            oco_ok = False
+
+            for attempt in range(3):
+
+                try:
+
+                    await self.router.place_oco_tp_sl(
+                        self.ex,
+                        symbol,
+                        qty,
+                        price
+                    )
+
+                    await asyncio.sleep(1)
+
+                    if await self.router.verify_oco(self.ex, symbol):
+
+                        oco_ok = True
+                        log.info(f"OCO_VERIFIED {symbol}")
+                        break
+
+                except Exception as e:
+
+                    log.warning(f"OCO_ATTEMPT_{attempt} failed {e}")
+
+            if not oco_ok:
+
+                log.critical(f"OCO_FAILED_PROTECTION {symbol}")
+
+                try:
+
+                    await self.router.close_position(
+                        self.ex,
+                        symbol,
+                        qty
+                    )
+
+                    log.critical(f"EMERGENCY_CLOSE_EXECUTED {symbol}")
+
+                except Exception as e:
+
+                    log.critical(f"FAILED_EMERGENCY_CLOSE {e}")
 
         except Exception as e:
-            log.exception(f"EXECUTION_FAILED {symbol} err={e}")
+
+            log.exception(f"EXECUTION_FAILED {symbol} {e}")
+
+        finally:
+
+            self._execution_lock.discard(symbol)
 
     async def run_live(self) -> None:
 
         await self.db.init()
 
+        await self.sync_positions()
+
         for sym in self.s.SYMBOLS:
             await self.seed_history(sym)
 
-        async for msg in self.ws.stream_klines(
-            list(self.s.SYMBOLS), self.s.PRIMARY_TF
-        ):
+        while True:
 
-            if not msg.is_closed:
-                continue
+            try:
 
-            if msg.symbol not in self._df15:
-                continue
+                async for msg in self.ws.stream_klines(
+                    list(self.s.SYMBOLS),
+                    self.s.PRIMARY_TF
+                ):
 
-            df = self._df15[msg.symbol]
+                    if not msg.is_closed:
+                        continue
 
-            new_row = {
-                "open": msg.kline.open,
-                "high": msg.kline.high,
-                "low": msg.kline.low,
-                "close": msg.kline.close,
-                "volume": msg.kline.volume,
-            }
+                    if msg.symbol not in self._df15:
+                        continue
 
-            df.loc[_ms_to_dt(msg.ts)] = new_row
+                    df = self._df15[msg.symbol]
 
-            if len(df) > 1000:
-                df = df.iloc[-1000:]
+                    df.loc[_ms_to_dt(msg.ts)] = {
+                        "open": msg.kline.open,
+                        "high": msg.kline.high,
+                        "low": msg.kline.low,
+                        "close": msg.kline.close,
+                        "volume": msg.kline.volume,
+                    }
 
-            self._df15[msg.symbol] = df
+                    if len(df) > 1000:
+                        df = df.tail(1000)
 
-            self._idx[msg.symbol] += 1
+                    self._df15[msg.symbol] = df
 
-            override = self.override.read_override()
+                    self._idx[msg.symbol] += 1
 
-            if override.enabled and override.kill_switch:
-                log.warning("GLOBAL KILL SWITCH ACTIVE — trading halted")
-                continue
+                    override = self.override.read_override()
 
-            # ENTRY ENGINE
-            await self.maybe_open_position(msg.symbol, self._idx[msg.symbol])
+                    if override.enabled and override.kill_switch:
+                        log.warning("GLOBAL KILL SWITCH ACTIVE")
+                        continue
 
-            # EXIT ENGINE
-            price = msg.close
+                    await self.maybe_open_position(msg.symbol, self._idx[msg.symbol])
 
-            await self.position_manager.maybe_close_position(
-                self.router,
-                self.ex,
-                self.portfolio,
-                msg.symbol,
-                price,
-                self._idx[msg.symbol],
-            )
+                    price = msg.kline.close
+
+                    await self.position_manager.maybe_close_position(
+                        self.router,
+                        self.ex,
+                        self.portfolio,
+                        msg.symbol,
+                        price,
+                        self._idx[msg.symbol],
+                    )
+
+            except Exception as e:
+
+                log.error(f"WS_STREAM_CRASH {e}")
+
+                await asyncio.sleep(5)
 
 
 async def main() -> None:
@@ -280,7 +365,6 @@ async def main() -> None:
 
     finally:
 
-        # graceful shutdown
         try:
             if engine.ws and hasattr(engine.ws, "close"):
                 await engine.ws.close()
