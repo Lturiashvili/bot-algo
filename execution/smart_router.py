@@ -137,6 +137,21 @@ class SmartRouter:
         return res
 
 
+    # =========================================================
+    # WRAPPER FOR POSITION MANAGER
+    # =========================================================
+    async def close_long(
+        self,
+        ex: Exchange,
+        symbol: str,
+        qty: float
+    ) -> OrderResult:
+
+        # PositionManager იძახებს ამ ფუნქციას
+        # რეალურად ვიძახებთ market sell-ს
+        return await self.close_long_market(ex, symbol, qty)
+
+
     async def cancel_all(self, ex: Exchange, symbol: str) -> None:
 
         try:
