@@ -63,7 +63,7 @@ class Engine:
 
         # Position Manager (EXIT ENGINE)
         self.position_manager = PositionManager(
-            tp_pct=0.02,
+            tp_pct=0.002,
             sl_pct=0.01,
             max_bars=30,
         )
