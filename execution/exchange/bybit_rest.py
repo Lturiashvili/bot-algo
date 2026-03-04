@@ -1,14 +1,5 @@
 """
 Production-grade Bybit REST client (Spot V5)
-
-Features:
-- Async aiohttp session reuse
-- Interval normalization (Binance → Bybit)
-- Normalized OHLCV schema
-- Proper V5 header-based authentication
-- Safe order parsing
-- Private API ping
-- Backward compatibility alias (BybitSpot)
 """
 
 import aiohttp
@@ -47,10 +38,11 @@ def _normalize_interval(interval: str) -> str:
 
 
 # ==========================================================
-# Bybit REST Client (V5)
+# Bybit REST Client
 # ==========================================================
 
 class BybitREST:
+
     BASE_URL = "https://api.bybit.com"
 
     def __init__(
@@ -60,40 +52,43 @@ class BybitREST:
         recv_window: int = 5000,
         timeout: int = 15,
     ):
-        self.name = "bybit"
 
         if not api_key or not api_secret:
             raise RuntimeError("Bybit API credentials missing")
 
+        self.name = "bybit"
         self.api_key = api_key
         self.api_secret = api_secret
         self.recv_window = recv_window
         self.timeout = timeout
+
         self._session: Optional[aiohttp.ClientSession] = None
 
-    # ------------------------------------------------------
-    # Session Handling
-    # ------------------------------------------------------
+
+# ==========================================================
+# Session
+# ==========================================================
 
     async def _get_session(self) -> aiohttp.ClientSession:
+
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             self._session = aiohttp.ClientSession(timeout=timeout)
+
         return self._session
 
+
     async def close(self):
+
         if self._session and not self._session.closed:
             await self._session.close()
 
-    # ------------------------------------------------------
-    # Private Ping — Wallet Balance (V5 Auth Check)
-    # ------------------------------------------------------
+
+# ==========================================================
+# Private Ping
+# ==========================================================
 
     async def private_ping(self) -> Dict[str, Any]:
-        """
-        Simple authenticated GET call to verify API permissions.
-        Uses /v5/account/wallet-balance
-        """
 
         endpoint = "/v5/account/wallet-balance"
         url = f"{self.BASE_URL}{endpoint}"
@@ -101,8 +96,6 @@ class BybitREST:
         timestamp = str(int(time.time() * 1000))
         query_string = "accountType=UNIFIED"
 
-        # V5 GET signature format:
-        # timestamp + api_key + recv_window + query_string
         sign_payload = (
             timestamp
             + self.api_key
@@ -130,19 +123,20 @@ class BybitREST:
             headers=headers,
             params={"accountType": "UNIFIED"},
         ) as resp:
+
             data = await resp.json()
 
         if data.get("retCode") != 0:
-            logger.error(f"PRIVATE_PING_ERROR {data}")
             raise Exception(f"Bybit private ping error: {data}")
 
         logger.info("PRIVATE_PING_OK")
 
         return data
 
-    # ------------------------------------------------------
-    # Fetch OHLCV (Public)
-    # ------------------------------------------------------
+
+# ==========================================================
+# Fetch OHLCV
+# ==========================================================
 
     async def fetch_ohlcv(
         self,
@@ -154,6 +148,7 @@ class BybitREST:
         interval = _normalize_interval(interval)
 
         url = f"{self.BASE_URL}/v5/market/kline"
+
         params = {
             "category": "spot",
             "symbol": symbol,
@@ -174,6 +169,7 @@ class BybitREST:
         normalized: List[Dict[str, Any]] = []
 
         for c in raw:
+
             normalized.append({
                 "ts": int(c[0]),
                 "open": float(c[1]),
@@ -185,15 +181,14 @@ class BybitREST:
 
         normalized.sort(key=lambda x: x["ts"])
 
-        logger.info(
-            f"FETCH_OHLCV_OK {symbol} interval={interval} candles={len(normalized)}"
-        )
+        logger.info(f"FETCH_OHLCV_OK {symbol}")
 
         return normalized
 
-    # ------------------------------------------------------
-    # Market Buy (Quote Amount) — V5 Correct Auth
-    # ------------------------------------------------------
+
+# ==========================================================
+# MARKET BUY (QUOTE SIZE)
+# ==========================================================
 
     async def market_buy_quote(
         self,
@@ -202,21 +197,20 @@ class BybitREST:
     ) -> Dict[str, Any]:
 
         url = f"{self.BASE_URL}/v5/order/create"
+
         timestamp = str(int(time.time() * 1000))
 
-body = {
-    "category": "spot",
-    "symbol": symbol,
-    "side": "Buy",
-    "orderType": "Market",
-    "qty": str(quote_amount),
-    "marketUnit": "quoteCoin",
-}
+        body = {
+            "category": "spot",
+            "symbol": symbol,
+            "side": "Buy",
+            "orderType": "Market",
+            "qty": str(quote_amount),
+            "marketUnit": "quoteCoin",
+        }
 
         body_str = json.dumps(body, separators=(",", ":"))
 
-        # V5 signature format:
-        # timestamp + api_key + recv_window + body_json
         sign_payload = (
             timestamp
             + self.api_key
@@ -245,6 +239,7 @@ body = {
             headers=headers,
             data=body_str,
         ) as resp:
+
             data = await resp.json()
 
         if data.get("retCode") != 0:
@@ -263,15 +258,13 @@ body = {
             "raw": result,
         }
 
-        logger.info(
-            f"MARKET_BUY_OK {symbol} order_id={parsed['order_id']}"
-        )
+        logger.info(f"MARKET_BUY_OK {symbol}")
 
         return parsed
 
 
 # ==========================================================
-# Backward Compatibility Alias
+# Alias
 # ==========================================================
 
 BybitSpot = BybitREST
