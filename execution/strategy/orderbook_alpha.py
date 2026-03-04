@@ -67,26 +67,25 @@ def compute_long_signal(
     not_too_extended = dist < 0.05
 
     # --- V2.7 pressure analyzer (non-blocking) ---
-    log_pressure(
-        symbol="UNKNOWN",
-        up15=up15,
-        up30=up30,
-        up1h=up1h,
-        rsi_ok=rsi_ok,
-        not_too_extended=not_too_extended,
-        atr_ok=(atr_val > 0),
-    )
+log_pressure(
+    symbol="UNKNOWN",
+    up15=up15,
+    up30=up30,
+    up1h=up1h,
+    rsi_ok=rsi_ok,
+    not_too_extended=not_too_extended,
+    atr_ok=(atr_val > 0),
+)
 
-
-    log.info(
-        "[BUY_MATRIX] %s | 15m=%d 30m=%d 1h=%d RSI=%d EXT=%d",
-        "UNKNOWN",
-        int(up15),
-        int(up30),
-        int(up1h),
-        int(rsi_ok),
-        int(not_too_extended),
-    )
+log.info(
+    "[BUY_MATRIX] %s | 15m=%d 30m=%d 1h=%d RSI=%d EXT=%d",
+    "REGIME=NEUTRAL",
+    int(up15),
+    int(up30),
+    int(up1h),
+    int(rsi_ok),
+    int(not_too_extended),
+)
 
     if up15 and up30 and up1h and rsi_ok and not_too_extended:
         atr_pct = atr_val / max(float(c15.iloc[-1]), 1e-12)
