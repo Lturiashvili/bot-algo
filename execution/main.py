@@ -5,7 +5,6 @@ import logging
 from datetime import datetime, timezone
 import os
 
-import numpy as np
 import pandas as pd
 
 from execution.config import Settings
@@ -30,9 +29,10 @@ def _ms_to_dt(ms: int) -> datetime:
 return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
 
 class Engine:
-def **init**(self, s: Settings) -> None:
 
 ```
+def __init__(self, s: Settings) -> None:
+
     self.s = s
     self.db = TradeDB(s.DB_PATH)
     self.portfolio = Portfolio()
@@ -52,7 +52,7 @@ def **init**(self, s: Settings) -> None:
     self.router = SmartRouter()
     self.override = EnvOverrideBridge()
 
-    # 🧠 Execution Brain
+    # Execution Brain
     self.execution_brain = ExecutionBrain(s, self.portfolio)
 
     self.filter_diagnostic = os.getenv("FILTER_DIAGNOSTIC", "0") == "1"
@@ -93,11 +93,7 @@ async def seed_history(self, symbol: str) -> None:
     log.info(f"FETCH_OHLCV_START {symbol}")
 
     candles = await asyncio.wait_for(
-        self.ex.fetch_ohlcv(
-            symbol,
-            self.s.PRIMARY_TF,
-            limit=600
-        ),
+        self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=600),
         timeout=15,
     )
 
@@ -170,13 +166,11 @@ async def maybe_open_position(self, symbol: str, idx: int) -> None:
             if hasattr(sig, "confidence"):
 
                 if sig.confidence < override.min_confidence_override:
-
                     log.info("ENV: confidence override reject")
                     return
 
     log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
 
-    # 🧠 Execution Brain Check
     decision = self.execution_brain.evaluate_trade(
         symbol=symbol,
         signal="BUY",
@@ -192,7 +186,6 @@ async def maybe_open_position(self, symbol: str, idx: int) -> None:
     try:
 
         base_size = 5
-
         size = base_size * decision["size_multiplier"]
 
         log.info(f"EXECUTION_START {symbol} size={size}USDT")
@@ -212,7 +205,6 @@ async def maybe_open_position(self, symbol: str, idx: int) -> None:
         )
 
     except Exception as e:
-
         log.exception(f"EXECUTION_FAILED {symbol} err={e}")
 
 async def run_live(self) -> None:
@@ -236,11 +228,7 @@ async def run_live(self) -> None:
         override = self.override.read_override()
 
         if override.enabled and override.kill_switch:
-
-            log.warning(
-                "GLOBAL KILL SWITCH ACTIVE — trading halted"
-            )
-
+            log.warning("GLOBAL KILL SWITCH ACTIVE — trading halted")
             continue
 
         await self.maybe_open_position(msg.symbol, 0)
@@ -250,7 +238,6 @@ async def main() -> None:
 
 ```
 s = Settings()
-
 engine = Engine(s)
 
 if (os.getenv("RUN_BACKTEST") or "").strip() == "1":
