@@ -29,6 +29,28 @@ class SmartRouter:
             }
         )
 
+        # ==========================================
+        # BALANCE GUARD
+        # ==========================================
+
+        balance = await ex.get_usdt_balance()
+
+        if balance < quote_usdt:
+            log.info(
+                "SKIP_TRADE_LOW_BALANCE",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol,
+                    "balance": balance,
+                    "required": quote_usdt
+                }
+            )
+            return None
+
+        # ==========================================
+        # EXECUTE BUY
+        # ==========================================
+
         res = await ex.market_buy_quote(symbol, quote_usdt)
 
         log.info(
