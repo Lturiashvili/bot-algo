@@ -206,7 +206,7 @@ class Engine:
         log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
 
         try:
-            test_quote_usdt = 5.0
+            test_quote_usdt = 10.0
 
             log.info(f"EXECUTION_START {symbol} size={test_quote_usdt}USDT")
 
