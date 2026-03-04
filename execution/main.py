@@ -271,10 +271,27 @@ async def main() -> None:
     s = Settings()
     engine = Engine(s)
 
-    if (os.getenv("RUN_BACKTEST") or "").strip() == "1":
-        return
+    try:
 
-    await engine.run_live()
+        if (os.getenv("RUN_BACKTEST") or "").strip() == "1":
+            return
+
+        await engine.run_live()
+
+    finally:
+
+        # graceful shutdown
+        try:
+            if engine.ws and hasattr(engine.ws, "close"):
+                await engine.ws.close()
+        except Exception:
+            pass
+
+        try:
+            if engine.ex and hasattr(engine.ex, "close"):
+                await engine.ex.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
