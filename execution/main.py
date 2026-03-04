@@ -19,6 +19,7 @@ from execution.portfolio import Portfolio
 from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
 from execution.execution_brain import ExecutionBrain
+from execution.position_manager import PositionManager
 from execution.strategy.orderbook_alpha import compute_long_signal
 from ui.env_override import EnvOverrideBridge
 
@@ -59,6 +60,13 @@ class Engine:
 
         # Execution Brain
         self.execution_brain = ExecutionBrain(s, self.portfolio)
+
+        # Position Manager (EXIT ENGINE)
+        self.position_manager = PositionManager(
+            tp_pct=0.02,
+            sl_pct=0.01,
+            max_bars=30,
+        )
 
         self.filter_diagnostic = os.getenv("FILTER_DIAGNOSTIC", "0") == "1"
 
@@ -217,8 +225,6 @@ class Engine:
             if msg.symbol not in self._df15:
                 continue
 
-            # --- UPDATE DATAFRAME WITH NEW CANDLE ---
-
             df = self._df15[msg.symbol]
 
             new_row = {
@@ -236,8 +242,6 @@ class Engine:
 
             self._df15[msg.symbol] = df
 
-            # --- BAR INDEX UPDATE (for cooldown logic) ---
-
             self._idx[msg.symbol] += 1
 
             override = self.override.read_override()
@@ -246,7 +250,20 @@ class Engine:
                 log.warning("GLOBAL KILL SWITCH ACTIVE — trading halted")
                 continue
 
+            # ENTRY ENGINE
             await self.maybe_open_position(msg.symbol, self._idx[msg.symbol])
+
+            # EXIT ENGINE
+            price = msg.close
+
+            await self.position_manager.maybe_close_position(
+                self.router,
+                self.ex,
+                self.portfolio,
+                msg.symbol,
+                price,
+                self._idx[msg.symbol],
+            )
 
 
 async def main() -> None:
