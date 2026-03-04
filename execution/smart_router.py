@@ -29,10 +29,6 @@ class SmartRouter:
             }
         )
 
-        # ==========================================
-        # BALANCE GUARD
-        # ==========================================
-
         balance = await ex.get_usdt_balance()
 
         if balance < quote_usdt:
@@ -47,10 +43,6 @@ class SmartRouter:
             )
             return None
 
-        # ==========================================
-        # EXECUTE BUY
-        # ==========================================
-
         res = await ex.market_buy_quote(symbol, quote_usdt)
 
         log.info(
@@ -58,9 +50,9 @@ class SmartRouter:
             extra={
                 "exchange": ex.name,
                 "symbol": symbol,
-                "qty": res.get("qty"),
-                "avg": res.get("avg_price"),
-                "status": res.get("status")
+                "qty": res.get("qty") if isinstance(res, dict) else getattr(res, "executed_qty", None),
+                "avg": res.get("avg_price") if isinstance(res, dict) else getattr(res, "avg_price", None),
+                "status": res.get("status") if isinstance(res, dict) else getattr(res, "status", None)
             }
         )
 
@@ -128,9 +120,9 @@ class SmartRouter:
             extra={
                 "exchange": ex.name,
                 "symbol": symbol,
-                "qty": res.executed_qty,
-                "avg": res.avg_price,
-                "status": res.status
+                "qty": getattr(res, "executed_qty", None),
+                "avg": getattr(res, "avg_price", None),
+                "status": getattr(res, "status", None)
             }
         )
 
@@ -147,9 +139,67 @@ class SmartRouter:
         qty: float
     ) -> OrderResult:
 
-        # PositionManager იძახებს ამ ფუნქციას
-        # რეალურად ვიძახებთ market sell-ს
+        if qty <= 0:
+            return None
+
         return await self.close_long_market(ex, symbol, qty)
+
+
+    # =========================================================
+    # OCO TAKE PROFIT + STOP LOSS
+    # =========================================================
+    async def place_oco_tp_sl(
+        self,
+        ex: Exchange,
+        symbol: str,
+        qty: float,
+        entry_price: float,
+        tp_pct: float = 0.02,
+        sl_pct: float = 0.01
+    ):
+
+        tp_price = entry_price * (1 + tp_pct)
+        sl_price = entry_price * (1 - sl_pct)
+
+        log.info(
+            "placing_oco_orders",
+            extra={
+                "symbol": symbol,
+                "tp": tp_price,
+                "sl": sl_price,
+                "qty": qty
+            }
+        )
+
+        try:
+
+            tp_order = await ex.limit_sell_base(symbol, qty, tp_price)
+
+            sl_order = await ex.stop_market_sell(
+                symbol,
+                qty,
+                sl_price
+            )
+
+            log.info(
+                "oco_orders_placed",
+                extra={
+                    "symbol": symbol,
+                    "tp_order": getattr(tp_order, "order_id", None),
+                    "sl_order": getattr(sl_order, "order_id", None)
+                }
+            )
+
+            return tp_order, sl_order
+
+        except Exception as e:
+
+            log.warning(
+                "oco_order_failed",
+                extra={"symbol": symbol, "err": str(e)}
+            )
+
+            return None, None
 
 
     async def cancel_all(self, ex: Exchange, symbol: str) -> None:
