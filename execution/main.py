@@ -48,6 +48,7 @@ def **init**(self, s: Settings) -> None:
     )
 
     self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
+
     self.router = SmartRouter()
     self.override = EnvOverrideBridge()
 
@@ -62,21 +63,29 @@ def **init**(self, s: Settings) -> None:
     self._idx: dict[str, int] = {sym: 0 for sym in s.SYMBOLS}
     self._df15: dict[str, pd.DataFrame] = {}
 
-    limiter = TokenBucket(rate_per_sec=s.REST_RATE_PER_SEC, burst=s.REST_BURST)
+    limiter = TokenBucket(
+        rate_per_sec=s.REST_RATE_PER_SEC,
+        burst=s.REST_BURST
+    )
 
     if s.EXCHANGE == "binance":
+
         self.ex = BinanceSpot(
             s.BINANCE_BASE_URL,
             s.BINANCE_API_KEY,
             s.BINANCE_API_SECRET,
             limiter,
         )
+
         self.ws = BinanceWS(s.BINANCE_WS_URL)
+
     else:
+
         self.ex = BybitSpot(
             s.BYBIT_API_KEY,
             s.BYBIT_API_SECRET,
         )
+
         self.ws = BybitWS(s.BYBIT_WS_URL)
 
 async def seed_history(self, symbol: str) -> None:
@@ -84,7 +93,11 @@ async def seed_history(self, symbol: str) -> None:
     log.info(f"FETCH_OHLCV_START {symbol}")
 
     candles = await asyncio.wait_for(
-        self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=600),
+        self.ex.fetch_ohlcv(
+            symbol,
+            self.s.PRIMARY_TF,
+            limit=600
+        ),
         timeout=15,
     )
 
@@ -117,6 +130,7 @@ async def maybe_open_position(self, symbol: str, idx: int) -> None:
     df15 = self._df15[symbol]
 
     min_bars = max(self.s.EMA_SLOW + 5, 50)
+
     if len(df15) < min_bars:
         return
 
@@ -146,40 +160,47 @@ async def maybe_open_position(self, symbol: str, idx: int) -> None:
     override = self.override.read_override()
 
     if override.enabled:
+
         if override.disable_new_entries:
             log.info("ENV: new entries disabled")
             return
 
         if override.min_confidence_override:
+
             if hasattr(sig, "confidence"):
+
                 if sig.confidence < override.min_confidence_override:
+
                     log.info("ENV: confidence override reject")
                     return
 
     log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
 
-    # 🧠 EXECUTION BRAIN CHECK
+    # 🧠 Execution Brain Check
     decision = self.execution_brain.evaluate_trade(
         symbol=symbol,
         signal="BUY",
         signal_score=getattr(sig, "confidence", 50),
-        regime="NEUTRAL"
+        regime="RANGE"
     )
 
     if not decision:
+
         log.info(f"EXECUTION_BLOCKED_BY_BRAIN {symbol}")
         return
 
     try:
 
-        test_quote_usdt = 5
+        base_size = 5
 
-        log.info(f"EXECUTION_START {symbol} size={test_quote_usdt}USDT")
+        size = base_size * decision["size_multiplier"]
+
+        log.info(f"EXECUTION_START {symbol} size={size}USDT")
 
         order = await self.router.open_long(
             self.ex,
             symbol,
-            test_quote_usdt
+            size
         )
 
         log.info(
@@ -191,6 +212,7 @@ async def maybe_open_position(self, symbol: str, idx: int) -> None:
         )
 
     except Exception as e:
+
         log.exception(f"EXECUTION_FAILED {symbol} err={e}")
 
 async def run_live(self) -> None:
@@ -201,7 +223,8 @@ async def run_live(self) -> None:
         await self.seed_history(sym)
 
     async for msg in self.ws.stream_klines(
-        list(self.s.SYMBOLS), self.s.PRIMARY_TF
+        list(self.s.SYMBOLS),
+        self.s.PRIMARY_TF
     ):
 
         if not msg.is_closed:
@@ -213,7 +236,11 @@ async def run_live(self) -> None:
         override = self.override.read_override()
 
         if override.enabled and override.kill_switch:
-            log.warning("GLOBAL KILL SWITCH ACTIVE — trading halted")
+
+            log.warning(
+                "GLOBAL KILL SWITCH ACTIVE — trading halted"
+            )
+
             continue
 
         await self.maybe_open_position(msg.symbol, 0)
@@ -223,6 +250,7 @@ async def main() -> None:
 
 ```
 s = Settings()
+
 engine = Engine(s)
 
 if (os.getenv("RUN_BACKTEST") or "").strip() == "1":
