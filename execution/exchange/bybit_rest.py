@@ -204,13 +204,14 @@ class BybitREST:
         url = f"{self.BASE_URL}/v5/order/create"
         timestamp = str(int(time.time() * 1000))
 
-        body = {
-            "category": "spot",
-            "symbol": symbol,
-            "side": "Buy",
-            "orderType": "Market",
-            "quoteOrderQty": str(quote_amount),
-        }
+body = {
+    "category": "spot",
+    "symbol": symbol,
+    "side": "Buy",
+    "orderType": "Market",
+    "qty": str(quote_amount),
+    "marketUnit": "quoteCoin",
+}
 
         body_str = json.dumps(body, separators=(",", ":"))
 
