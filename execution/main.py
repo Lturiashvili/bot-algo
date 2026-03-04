@@ -228,11 +228,11 @@ class Engine:
             df = self._df15[msg.symbol]
 
             new_row = {
-                "open": msg.open,
-                "high": msg.high,
-                "low": msg.low,
-                "close": msg.close,
-                "volume": msg.volume,
+                "open": msg.kline.open,
+                "high": msg.kline.high,
+                "low": msg.kline.low,
+                "close": msg.kline.close,
+                "volume": msg.kline.volume,
             }
 
             df.loc[_ms_to_dt(msg.ts)] = new_row
