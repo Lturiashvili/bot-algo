@@ -58,7 +58,7 @@ class SmartRouter:
             extra={
                 "exchange": ex.name,
                 "symbol": symbol,
-                "qty": res.get("executed_qty"),
+                "qty": res.get("qty"),
                 "avg": res.get("avg_price"),
                 "status": res.get("status")
             }
