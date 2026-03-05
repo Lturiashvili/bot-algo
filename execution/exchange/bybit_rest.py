@@ -93,7 +93,7 @@ class BybitREST:
 
 
 # ==========================================================
-# FETCH OPEN ORDERS (NEW)
+# FETCH OPEN ORDERS
 # ==========================================================
 
     async def fetch_open_orders(self, symbol: str):
@@ -176,6 +176,62 @@ class BybitREST:
                 return float(c["walletBalance"])
 
         return 0.0
+
+
+# ==========================================================
+# FETCH ALL BALANCES (NEW)
+# ==========================================================
+
+    async def fetch_balances(self) -> Dict[str, float]:
+
+        endpoint = "/v5/account/wallet-balance"
+        url = f"{self.BASE_URL}{endpoint}"
+
+        timestamp = str(int(time.time() * 1000))
+        query_string = "accountType=UNIFIED"
+
+        signature = self._sign(timestamp, query_string)
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-RECV-WINDOW": str(self.recv_window),
+        }
+
+        session = await self._get_session()
+
+        async with session.get(
+            url,
+            headers=headers,
+            params={"accountType": "UNIFIED"},
+        ) as resp:
+
+            data = await resp.json()
+
+        if data.get("retCode") != 0:
+            logger.error(f"FETCH_BALANCES_ERROR {data}")
+            return {}
+
+        balances: Dict[str, float] = {}
+
+        try:
+
+            coins = data["result"]["list"][0]["coin"]
+
+            for c in coins:
+
+                coin = c["coin"]
+                balance = float(c["walletBalance"])
+
+                balances[coin] = balance
+
+        except Exception as e:
+
+            logger.error(f"FETCH_BALANCES_PARSE_ERROR {e}")
+            return {}
+
+        return balances
 
 
 # ==========================================================
