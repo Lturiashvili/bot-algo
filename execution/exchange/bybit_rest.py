@@ -62,8 +62,6 @@ class BybitREST:
     MAX_RETRIES = 3
     RETRY_BACKOFF = 0.5
 
-    # ------------------------------------------------------
-
     def __init__(
         self,
         api_key: str,
@@ -211,46 +209,7 @@ class BybitREST:
         raise RuntimeError("BYBIT_REQUEST_FAILED")
 
     # ==========================================================
-    # SYMBOL PRECISION CACHE
-    # ==========================================================
-
-    async def _get_symbol_precision(self, symbol: str) -> int:
-
-        if symbol in self._symbol_precisions:
-            return self._symbol_precisions[symbol]
-
-        data = await self._request(
-            "GET",
-            "/v5/market/instruments-info",
-            params={
-                "category": "spot",
-                "symbol": symbol
-            },
-        )
-
-        instruments = data["result"]["list"]
-
-        for inst in instruments:
-
-            if inst["symbol"] == symbol:
-
-                filters = inst["lotSizeFilter"]
-
-                step = (
-                    filters.get("quotePrecision")
-                    or filters.get("basePrecision")
-                )
-
-                precision = len(step.split(".")[-1])
-
-                self._symbol_precisions[symbol] = precision
-
-                return precision
-
-        return 6
-
-    # ==========================================================
-    # FETCH BALANCES
+    # BALANCES
     # ==========================================================
 
     async def fetch_balances(self) -> Dict[str, float]:
@@ -286,13 +245,24 @@ class BybitREST:
 
         return balances
 
+
+    # ------------------------------------------------------
+    # FETCH USDT BALANCE (used by main.py)
+    # ------------------------------------------------------
+
+    async def fetch_usdt_balance(self) -> float:
+        balances = await self.fetch_balances()
+        return balances.get("USDT", 0.0)
+
+
+    # ------------------------------------------------------
+    # Backward compatibility
     # ------------------------------------------------------
 
     async def get_usdt_balance(self) -> float:
-
         balances = await self.fetch_balances()
-
         return balances.get("USDT", 0.0)
+
 
     # ==========================================================
     # FETCH OPEN ORDERS
@@ -311,6 +281,7 @@ class BybitREST:
         )
 
         return data["result"]["list"]
+
 
     # ==========================================================
     # FETCH OHLCV
@@ -359,6 +330,47 @@ class BybitREST:
 
         return candles
 
+
+    # ==========================================================
+    # SYMBOL PRECISION
+    # ==========================================================
+
+    async def _get_symbol_precision(self, symbol: str) -> int:
+
+        if symbol in self._symbol_precisions:
+            return self._symbol_precisions[symbol]
+
+        data = await self._request(
+            "GET",
+            "/v5/market/instruments-info",
+            params={
+                "category": "spot",
+                "symbol": symbol
+            },
+        )
+
+        instruments = data["result"]["list"]
+
+        for inst in instruments:
+
+            if inst["symbol"] == symbol:
+
+                filters = inst["lotSizeFilter"]
+
+                step = (
+                    filters.get("quotePrecision")
+                    or filters.get("basePrecision")
+                )
+
+                precision = len(step.split(".")[-1])
+
+                self._symbol_precisions[symbol] = precision
+
+                return precision
+
+        return 6
+
+
     # ==========================================================
     # PRECISION SAFE QTY
     # ==========================================================
@@ -372,6 +384,7 @@ class BybitREST:
         fmt = "{:0." + str(precision) + "f}"
 
         return fmt.format(rounded)
+
 
     # ==========================================================
     # MARKET BUY (QUOTE SIZE)
