@@ -18,7 +18,7 @@ class ExecResult:
 
 class SmartRouter:
 
-    async def open_long(self, ex: Exchange, symbol: str, quote_usdt: float) -> OrderResult:
+    async def open_long(self, ex: Exchange, symbol: str, quote_usdt: float) -> Optional[OrderResult]:
 
         log.info(
             "open_long_request",
@@ -32,6 +32,7 @@ class SmartRouter:
         balance = await ex.get_usdt_balance()
 
         if balance < quote_usdt:
+
             log.info(
                 "SKIP_TRADE_LOW_BALANCE",
                 extra={
@@ -41,6 +42,7 @@ class SmartRouter:
                     "required": quote_usdt
                 }
             )
+
             return None
 
         res = await ex.market_buy_quote(symbol, quote_usdt)
@@ -68,6 +70,7 @@ class SmartRouter:
     ) -> Optional[OrderResult]:
 
         try:
+
             o = await ex.limit_sell_base(symbol, qty, tp_price)
 
             log.info(
@@ -102,7 +105,7 @@ class SmartRouter:
         ex: Exchange,
         symbol: str,
         qty: float
-    ) -> OrderResult:
+    ) -> Optional[OrderResult]:
 
         log.info(
             "close_long_request",
@@ -137,7 +140,7 @@ class SmartRouter:
         ex: Exchange,
         symbol: str,
         qty: float
-    ) -> OrderResult:
+    ) -> Optional[OrderResult]:
 
         if qty <= 0:
             return None
@@ -202,9 +205,107 @@ class SmartRouter:
             return None, None
 
 
+    # =========================================================
+    # VERIFY OCO EXISTS (used by main.py)
+    # =========================================================
+    async def verify_oco(self, ex: Exchange, symbol: str) -> bool:
+
+        try:
+
+            orders = await ex.fetch_open_orders(symbol)
+
+            tp_found = False
+            sl_found = False
+
+            for o in orders:
+
+                otype = str(o.get("type", "")).lower()
+
+                if "limit" in otype or "take_profit" in otype:
+                    tp_found = True
+
+                if "stop" in otype:
+                    sl_found = True
+
+            log.info(
+                "verify_oco_result",
+                extra={
+                    "symbol": symbol,
+                    "tp_found": tp_found,
+                    "sl_found": sl_found
+                }
+            )
+
+            return tp_found and sl_found
+
+        except Exception as e:
+
+            log.warning(
+                "verify_oco_failed",
+                extra={
+                    "symbol": symbol,
+                    "err": str(e)
+                }
+            )
+
+            return False
+
+
+    # =========================================================
+    # EMERGENCY CLOSE (OCO failed protection)
+    # =========================================================
+    async def close_position(
+        self,
+        ex: Exchange,
+        symbol: str,
+        qty: float
+    ) -> Optional[OrderResult]:
+
+        if qty <= 0:
+            return None
+
+        try:
+
+            log.critical(
+                "EMERGENCY_CLOSE_POSITION",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol,
+                    "qty": qty
+                }
+            )
+
+            res = await ex.market_sell_base(symbol, qty)
+
+            log.critical(
+                "EMERGENCY_CLOSE_DONE",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol,
+                    "qty": getattr(res, "executed_qty", None),
+                    "avg": getattr(res, "avg_price", None)
+                }
+            )
+
+            return res
+
+        except Exception as e:
+
+            log.critical(
+                "EMERGENCY_CLOSE_FAILED",
+                extra={
+                    "symbol": symbol,
+                    "err": str(e)
+                }
+            )
+
+            return None
+
+
     async def cancel_all(self, ex: Exchange, symbol: str) -> None:
 
         try:
+
             await ex.cancel_all(symbol)
 
             log.info(
