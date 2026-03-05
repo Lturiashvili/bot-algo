@@ -246,18 +246,10 @@ class BybitREST:
         return balances
 
 
-    # ------------------------------------------------------
-    # FETCH USDT BALANCE (used by main.py)
-    # ------------------------------------------------------
-
     async def fetch_usdt_balance(self) -> float:
         balances = await self.fetch_balances()
         return balances.get("USDT", 0.0)
 
-
-    # ------------------------------------------------------
-    # Backward compatibility
-    # ------------------------------------------------------
 
     async def get_usdt_balance(self) -> float:
         balances = await self.fetch_balances()
@@ -428,6 +420,40 @@ class BybitREST:
         logger.info(f"MARKET_BUY_OK symbol={symbol}")
 
         return parsed
+
+
+    # ==========================================================
+    # MARKET SELL
+    # ==========================================================
+
+    async def market_sell(
+        self,
+        symbol: str,
+        qty: float,
+    ):
+
+        qty = await self._safe_qty(symbol, qty)
+
+        body = {
+            "category": "spot",
+            "symbol": symbol,
+            "side": "Sell",
+            "orderType": "Market",
+            "qty": qty,
+        }
+
+        data = await self._request(
+            "POST",
+            "/v5/order/create",
+            body=body,
+            private=True,
+        )
+
+        result = data.get("result", {})
+
+        logger.info(f"MARKET_SELL_OK symbol={symbol}")
+
+        return result
 
 
 BybitSpot = BybitREST
