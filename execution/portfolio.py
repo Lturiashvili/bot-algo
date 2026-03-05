@@ -29,37 +29,51 @@ class Portfolio:
     positions: dict[str, Position] = field(default_factory=dict)
     cooldown_until_ts: dict[str, float] = field(default_factory=dict)
 
+    # =========================
+    # POSITION QUERIES
+    # =========================
     def has_position(self, symbol: str) -> bool:
         return symbol in self.positions
 
     def get(self, symbol: str) -> Optional[Position]:
         return self.positions.get(symbol)
 
+    def count_open_positions(self) -> int:
+        return len(self.positions)
+
+    # =========================
+    # POSITION MANAGEMENT
+    # =========================
     def open(self, p: Position, current_idx: int, cooldown_candles: int) -> None:
         import time
 
         self.positions[p.symbol] = p
 
-        # Convert candle cooldown to seconds (assume 15m candles default)
         cooldown_seconds = cooldown_candles * 900
         self.cooldown_until_ts[p.symbol] = time.time() + cooldown_seconds
 
     def close(self, symbol: str) -> None:
         self.positions.pop(symbol, None)
 
+    # =========================
+    # COOLDOWN
+    # =========================
     def in_cooldown(self, symbol: str, current_idx: int) -> bool:
         import time
 
         until = self.cooldown_until_ts.get(symbol, 0.0)
         return time.time() < until
 
+    # =========================
+    # TIME UTILITY
+    # =========================
     @staticmethod
     def now() -> datetime:
         return datetime.now(timezone.utc)
 
-    # =====================================================
-    # NEW FUNCTION: sync existing exchange position
-    # =====================================================
+    # =========================
+    # SYNC EXISTING POSITION
+    # =========================
     def sync_position(self, symbol: str, qty: float, entry_price: float) -> None:
 
         p = Position(
