@@ -18,7 +18,7 @@ spec:
           imagePullPolicy: Always
           env:
             - name: EXCHANGE
-              value: "binance" # or bybit
+              value: "bybit" 
             - name: SYMBOLS
               value: "BTCUSDT,SOLUSDT"
             - name: PRIMARY_TF
