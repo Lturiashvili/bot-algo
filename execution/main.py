@@ -194,6 +194,8 @@ class Engine:
 
         capital = await self.ex.fetch_usdt_balance()
 
+        log.info(f"DEBUG_BALANCE={capital}")
+
         if capital < 3:
             log.warning("INSUFFICIENT_CAPITAL")
             return
