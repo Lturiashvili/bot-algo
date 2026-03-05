@@ -119,6 +119,10 @@ class Engine:
 
         self._df15[symbol] = df
 
+    # ===============================
+    # FIXED POSITION SYNC
+    # ===============================
+
     async def sync_positions(self):
 
         try:
@@ -132,13 +136,18 @@ class Engine:
 
                 symbol = f"{asset}USDT"
 
-                if symbol in self.s.SYMBOLS:
+                if symbol not in self.s.SYMBOLS:
+                    continue
 
-                    self.portfolio.sync_position(
-                        symbol=symbol,
-                        qty=amount,
-                        entry_price=None
-                    )
+                price = await self.ex.get_last_price(symbol)
+
+                self.portfolio.sync_position(
+                    symbol=symbol,
+                    qty=amount,
+                    entry_price=price
+                )
+
+                log.info(f"SYNC_POSITION {symbol} qty={amount} entry_price={price}")
 
         except Exception as e:
 
@@ -228,10 +237,6 @@ class Engine:
                 entry_price=price,
                 entry_idx=idx,
             )
-
-            # ===============================
-            # OCO SAFETY LAYER
-            # ===============================
 
             oco_ok = False
 
