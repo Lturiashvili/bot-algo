@@ -1,20 +1,37 @@
 """
-Production-grade Bybit REST client (Spot V5)
+Institutional-grade Bybit REST client (Spot V5)
+
+Features
+--------
+• Safe signing
+• HTTP protection
+• Retry system
+• Rate-limit handling
+• Precision-safe orders
+• Proper balance parsing
+• Async session reuse
 """
 
 import aiohttp
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
 import time
 from typing import Dict, List, Any, Optional
+from urllib.parse import urlencode
 
 
 logger = logging.getLogger(__name__)
 
 
+# ==========================================================
+# INTERVAL NORMALIZATION
+# ==========================================================
+
 def _normalize_interval(interval: str) -> str:
+
     mapping = {
         "1m": "1",
         "3m": "3",
@@ -30,12 +47,22 @@ def _normalize_interval(interval: str) -> str:
         "1w": "W",
         "1M": "M",
     }
+
     return mapping.get(interval, interval)
 
+
+# ==========================================================
+# BYBIT REST CLIENT
+# ==========================================================
 
 class BybitREST:
 
     BASE_URL = "https://api.bybit.com"
+
+    MAX_RETRIES = 3
+    RETRY_BACKOFF = 0.5
+
+    # ------------------------------------------------------
 
     def __init__(
         self,
@@ -55,7 +82,9 @@ class BybitREST:
         self.timeout = timeout
 
         self._session: Optional[aiohttp.ClientSession] = None
+        self._symbol_precisions: Dict[str, int] = {}
 
+    # ------------------------------------------------------
 
     async def _get_session(self) -> aiohttp.ClientSession:
 
@@ -65,16 +94,16 @@ class BybitREST:
 
         return self._session
 
+    # ------------------------------------------------------
 
     async def close(self):
 
         if self._session and not self._session.closed:
             await self._session.close()
 
-
-# ==========================================================
-# PRIVATE SIGN HELPER
-# ==========================================================
+    # ==========================================================
+    # SIGNING
+    # ==========================================================
 
     def _sign(self, timestamp: str, payload: str) -> str:
 
@@ -91,127 +120,147 @@ class BybitREST:
             hashlib.sha256
         ).hexdigest()
 
+    # ==========================================================
+    # HTTP REQUEST WRAPPER
+    # ==========================================================
 
-# ==========================================================
-# FETCH OPEN ORDERS
-# ==========================================================
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[Dict] = None,
+        body: Optional[Dict] = None,
+        private: bool = False,
+    ) -> Dict:
 
-    async def fetch_open_orders(self, symbol: str):
-
-        endpoint = "/v5/order/realtime"
         url = f"{self.BASE_URL}{endpoint}"
-
-        timestamp = str(int(time.time() * 1000))
-
-        params = {
-            "category": "spot",
-            "symbol": symbol
-        }
-
-        query_string = f"category=spot&symbol={symbol}"
-
-        signature = self._sign(timestamp, query_string)
-
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-RECV-WINDOW": str(self.recv_window),
-        }
 
         session = await self._get_session()
 
-        async with session.get(
-            url,
-            headers=headers,
-            params=params,
-        ) as resp:
+        for attempt in range(self.MAX_RETRIES):
 
-            data = await resp.json()
+            try:
 
-        if data.get("retCode") != 0:
-            raise Exception(f"Bybit fetch_open_orders error: {data}")
+                headers = {}
 
-        return data["result"]["list"]
+                query_string = urlencode(params) if params else ""
+                body_string = json.dumps(body, separators=(",", ":")) if body else ""
 
+                payload = query_string + body_string
 
-# ==========================================================
-# GET USDT BALANCE
-# ==========================================================
+                if private:
 
-    async def get_usdt_balance(self) -> float:
+                    timestamp = str(int(time.time() * 1000))
 
-        endpoint = "/v5/account/wallet-balance"
-        url = f"{self.BASE_URL}{endpoint}"
+                    signature = self._sign(timestamp, payload)
 
-        timestamp = str(int(time.time() * 1000))
-        query_string = "accountType=UNIFIED"
+                    headers.update({
+                        "X-BAPI-API-KEY": self.api_key,
+                        "X-BAPI-TIMESTAMP": timestamp,
+                        "X-BAPI-SIGN": signature,
+                        "X-BAPI-RECV-WINDOW": str(self.recv_window),
+                    })
 
-        signature = self._sign(timestamp, query_string)
+                if body:
+                    headers["Content-Type"] = "application/json"
 
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-RECV-WINDOW": str(self.recv_window),
-        }
+                async with session.request(
+                    method,
+                    url,
+                    params=params,
+                    data=body_string if body else None,
+                    headers=headers,
+                ) as resp:
 
-        session = await self._get_session()
+                    if resp.status != 200:
 
-        async with session.get(
-            url,
-            headers=headers,
-            params={"accountType": "UNIFIED"},
-        ) as resp:
+                        text = await resp.text()
 
-            data = await resp.json()
+                        raise RuntimeError(
+                            f"HTTP_ERROR {resp.status} {text}"
+                        )
 
-        if data.get("retCode") != 0:
-            raise Exception(f"Bybit balance error: {data}")
+                    data = await resp.json()
 
-        coins = data["result"]["list"][0]["coin"]
+                ret = data.get("retCode")
 
-        for c in coins:
-            if c["coin"] == "USDT":
-                return float(c["walletBalance"])
+                if ret == 0:
+                    return data
 
-        return 0.0
+                if ret in (10006, 10016):
 
+                    logger.warning("BYBIT_RATE_LIMIT retrying...")
 
-# ==========================================================
-# FETCH ALL BALANCES (NEW)
-# ==========================================================
+                    await asyncio.sleep(
+                        self.RETRY_BACKOFF * (attempt + 1)
+                    )
+
+                    continue
+
+                raise RuntimeError(f"BYBIT_API_ERROR {data}")
+
+            except Exception:
+
+                if attempt == self.MAX_RETRIES - 1:
+                    raise
+
+                await asyncio.sleep(
+                    self.RETRY_BACKOFF * (attempt + 1)
+                )
+
+        raise RuntimeError("BYBIT_REQUEST_FAILED")
+
+    # ==========================================================
+    # SYMBOL PRECISION CACHE
+    # ==========================================================
+
+    async def _get_symbol_precision(self, symbol: str) -> int:
+
+        if symbol in self._symbol_precisions:
+            return self._symbol_precisions[symbol]
+
+        data = await self._request(
+            "GET",
+            "/v5/market/instruments-info",
+            params={
+                "category": "spot",
+                "symbol": symbol
+            },
+        )
+
+        instruments = data["result"]["list"]
+
+        for inst in instruments:
+
+            if inst["symbol"] == symbol:
+
+                filters = inst["lotSizeFilter"]
+
+                step = (
+                    filters.get("quotePrecision")
+                    or filters.get("basePrecision")
+                )
+
+                precision = len(step.split(".")[-1])
+
+                self._symbol_precisions[symbol] = precision
+
+                return precision
+
+        return 6
+
+    # ==========================================================
+    # FETCH BALANCES
+    # ==========================================================
 
     async def fetch_balances(self) -> Dict[str, float]:
 
-        endpoint = "/v5/account/wallet-balance"
-        url = f"{self.BASE_URL}{endpoint}"
-
-        timestamp = str(int(time.time() * 1000))
-        query_string = "accountType=UNIFIED"
-
-        signature = self._sign(timestamp, query_string)
-
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-RECV-WINDOW": str(self.recv_window),
-        }
-
-        session = await self._get_session()
-
-        async with session.get(
-            url,
-            headers=headers,
+        data = await self._request(
+            "GET",
+            "/v5/account/wallet-balance",
             params={"accountType": "UNIFIED"},
-        ) as resp:
-
-            data = await resp.json()
-
-        if data.get("retCode") != 0:
-            logger.error(f"FETCH_BALANCES_ERROR {data}")
-            return {}
+            private=True,
+        )
 
         balances: Dict[str, float] = {}
 
@@ -222,21 +271,50 @@ class BybitREST:
             for c in coins:
 
                 coin = c["coin"]
-                balance = float(c["walletBalance"])
 
-                balances[coin] = balance
+                available = float(
+                    c.get("availableToWithdraw")
+                    or c.get("availableBalance")
+                    or 0
+                )
+
+                balances[coin] = available
 
         except Exception as e:
 
-            logger.error(f"FETCH_BALANCES_PARSE_ERROR {e}")
-            return {}
+            logger.error(f"BALANCE_PARSE_ERROR {e}")
 
         return balances
 
+    # ------------------------------------------------------
 
-# ==========================================================
-# FETCH OHLCV
-# ==========================================================
+    async def get_usdt_balance(self) -> float:
+
+        balances = await self.fetch_balances()
+
+        return balances.get("USDT", 0.0)
+
+    # ==========================================================
+    # FETCH OPEN ORDERS
+    # ==========================================================
+
+    async def fetch_open_orders(self, symbol: str):
+
+        data = await self._request(
+            "GET",
+            "/v5/order/realtime",
+            params={
+                "category": "spot",
+                "symbol": symbol,
+            },
+            private=True,
+        )
+
+        return data["result"]["list"]
+
+    # ==========================================================
+    # FETCH OHLCV
+    # ==========================================================
 
     async def fetch_ohlcv(
         self,
@@ -247,30 +325,26 @@ class BybitREST:
 
         interval = _normalize_interval(interval)
 
-        url = f"{self.BASE_URL}/v5/market/kline"
-
-        params = {
-            "category": "spot",
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit,
-        }
-
-        session = await self._get_session()
-
-        async with session.get(url, params=params) as resp:
-            data = await resp.json()
-
-        if data.get("retCode") != 0:
-            raise Exception(f"Bybit error: {data}")
+        data = await self._request(
+            "GET",
+            "/v5/market/kline",
+            params={
+                "category": "spot",
+                "symbol": symbol,
+                "interval": interval,
+                "limit": limit,
+            },
+        )
 
         raw = data["result"]["list"]
 
-        normalized: List[Dict[str, Any]] = []
+        raw.reverse()
+
+        candles: List[Dict[str, Any]] = []
 
         for c in raw:
 
-            normalized.append({
+            candles.append({
                 "ts": int(c[0]),
                 "open": float(c[1]),
                 "high": float(c[2]),
@@ -279,16 +353,29 @@ class BybitREST:
                 "volume": float(c[5]),
             })
 
-        normalized.sort(key=lambda x: x["ts"])
+        logger.info(
+            f"FETCH_OHLCV_OK symbol={symbol} candles={len(candles)}"
+        )
 
-        logger.info(f"FETCH_OHLCV_OK {symbol}")
+        return candles
 
-        return normalized
+    # ==========================================================
+    # PRECISION SAFE QTY
+    # ==========================================================
 
+    async def _safe_qty(self, symbol: str, qty: float) -> str:
 
-# ==========================================================
-# MARKET BUY (QUOTE SIZE)
-# ==========================================================
+        precision = await self._get_symbol_precision(symbol)
+
+        rounded = round(qty, precision)
+
+        fmt = "{:0." + str(precision) + "f}"
+
+        return fmt.format(rounded)
+
+    # ==========================================================
+    # MARKET BUY (QUOTE SIZE)
+    # ==========================================================
 
     async def market_buy_quote(
         self,
@@ -296,58 +383,36 @@ class BybitREST:
         quote_amount: float,
     ) -> Dict[str, Any]:
 
-        url = f"{self.BASE_URL}/v5/order/create"
-
-        timestamp = str(int(time.time() * 1000))
+        qty = await self._safe_qty(symbol, quote_amount)
 
         body = {
             "category": "spot",
             "symbol": symbol,
             "side": "Buy",
             "orderType": "Market",
-            "qty": str(quote_amount),
+            "qty": qty,
             "marketUnit": "quoteCoin",
         }
 
-        body_str = json.dumps(body, separators=(",", ":"))
-
-        signature = self._sign(timestamp, body_str)
-
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-RECV-WINDOW": str(self.recv_window),
-            "Content-Type": "application/json",
-        }
-
-        session = await self._get_session()
-
-        async with session.post(
-            url,
-            headers=headers,
-            data=body_str,
-        ) as resp:
-
-            data = await resp.json()
-
-        if data.get("retCode") != 0:
-            logger.error(f"MARKET_BUY_ERROR {data}")
-            raise Exception(f"Bybit order error: {data}")
+        data = await self._request(
+            "POST",
+            "/v5/order/create",
+            body=body,
+            private=True,
+        )
 
         result = data.get("result", {})
 
         parsed = {
             "order_id": result.get("orderId"),
-            "symbol": result.get("symbol"),
-            "side": result.get("side"),
-            "status": result.get("orderStatus"),
-            "qty": result.get("qty"),
-            "avg_price": result.get("avgPrice"),
+            "order_link_id": result.get("orderLinkId"),
+            "symbol": symbol,
+            "side": "Buy",
+            "status": "submitted",
             "raw": result,
         }
 
-        logger.info(f"MARKET_BUY_OK {symbol}")
+        logger.info(f"MARKET_BUY_OK symbol={symbol}")
 
         return parsed
 
