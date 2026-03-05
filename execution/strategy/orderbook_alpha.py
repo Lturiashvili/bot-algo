@@ -78,13 +78,13 @@ def compute_long_signal(
     )
 
     log.info(
-        "[BUY_MATRIX] 15m=%d RSI=%d EXT=%d",
-        "REGIME=NEUTRAL",
-        int(up15),
-        int(up30),
-        int(up1h),
-        int(rsi_ok),
-        int(not_too_extended),
+        "[BUY_MATRIX] REGIME=%s | 15m=%s 30m=%s 1h=%s RSI=%s EXT=%s",
+        "NEUTRAL",
+        up15,
+        up30,
+        up1h,
+        rsi_ok,
+        not_too_extended,
     )
 
     if up15 and rsi_ok and not_too_extended:
