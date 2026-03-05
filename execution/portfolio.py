@@ -37,7 +37,9 @@ class Portfolio:
 
     def open(self, p: Position, current_idx: int, cooldown_candles: int) -> None:
         import time
+
         self.positions[p.symbol] = p
+
         # Convert candle cooldown to seconds (assume 15m candles default)
         cooldown_seconds = cooldown_candles * 900
         self.cooldown_until_ts[p.symbol] = time.time() + cooldown_seconds
@@ -47,9 +49,35 @@ class Portfolio:
 
     def in_cooldown(self, symbol: str, current_idx: int) -> bool:
         import time
+
         until = self.cooldown_until_ts.get(symbol, 0.0)
         return time.time() < until
 
     @staticmethod
     def now() -> datetime:
         return datetime.now(timezone.utc)
+
+    # =====================================================
+    # NEW FUNCTION: sync existing exchange position
+    # =====================================================
+    def sync_position(self, symbol: str, qty: float, entry_price: float) -> None:
+
+        p = Position(
+            symbol=symbol,
+            qty=qty,
+            entry_price=entry_price,
+            entry_time=self.now(),
+
+            atr_at_entry=0.0,
+            stop_price=0.0,
+            tp_price=0.0,
+
+            best_price=entry_price,
+            trailing_enabled=False,
+            trailing_stop=0.0,
+
+            trade_id=0,
+            partial_done=False,
+        )
+
+        self.positions[symbol] = p
