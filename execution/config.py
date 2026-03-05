@@ -34,7 +34,7 @@ class Settings:
     ATR_PERIOD: int = int(os.getenv("ATR_PERIOD", "14"))
 
     # Risk
-    POSITION_PCT: float = float(os.getenv("POSITION_PCT", "0.45"))  # 3% balance in USDT
+    POSITION_PCT: float = float(os.getenv("POSITION_PCT", "0.15"))  # 3% balance in USDT
     STOP_ATR_MULT: float = float(os.getenv("STOP_ATR_MULT", "1.5"))
     TP_ATR_MULT: float = float(os.getenv("TP_ATR_MULT", "3.0"))
     TRAILING_ENABLED: bool = _get_bool("TRAILING_ENABLED", True)
