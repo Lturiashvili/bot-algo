@@ -78,7 +78,7 @@ def compute_long_signal(
     )
 
     log.info(
-        "[BUY_MATRIX] %s | 15m=%d 30m=%d 1h=%d RSI=%d EXT=%d",
+        "[BUY_MATRIX] 15m=%d RSI=%d EXT=%d",
         "REGIME=NEUTRAL",
         int(up15),
         int(up30),
@@ -87,7 +87,7 @@ def compute_long_signal(
         int(not_too_extended),
     )
 
-    if up15 and up30 and up1h and rsi_ok and not_too_extended:
+    if up15 and rsi_ok and not_too_extended:
         atr_pct = atr_val / max(float(c15.iloc[-1]), 1e-12)
         slope_fast = float(ef15.iloc[-1] - ef15.iloc[-5]) / max(float(c15.iloc[-1]), 1e-12)
         slope_slow = float(es15.iloc[-1] - es15.iloc[-5]) / max(float(c15.iloc[-1]), 1e-12)
@@ -106,7 +106,7 @@ def compute_long_signal(
         return Signal("BUY", "TREND_OK", atr_val, feats)
 
     # --- V2.7 ANALYZER METADATA (non-breaking) ---
-    trend_ok = (up15 and up30 and up1h)
+    trend_ok = up15
     reason_str = (
         f"FILTERS_FAIL:"
         f"trend={trend_ok},"
