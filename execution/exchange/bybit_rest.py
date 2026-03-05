@@ -14,10 +14,6 @@ from typing import Dict, List, Any, Optional
 logger = logging.getLogger(__name__)
 
 
-# ==========================================================
-# Interval Converter
-# ==========================================================
-
 def _normalize_interval(interval: str) -> str:
     mapping = {
         "1m": "1",
@@ -36,10 +32,6 @@ def _normalize_interval(interval: str) -> str:
     }
     return mapping.get(interval, interval)
 
-
-# ==========================================================
-# Bybit REST Client
-# ==========================================================
 
 class BybitREST:
 
@@ -65,10 +57,6 @@ class BybitREST:
         self._session: Optional[aiohttp.ClientSession] = None
 
 
-# ==========================================================
-# Session
-# ==========================================================
-
     async def _get_session(self) -> aiohttp.ClientSession:
 
         if self._session is None or self._session.closed:
@@ -85,29 +73,44 @@ class BybitREST:
 
 
 # ==========================================================
-# Private Ping
+# PRIVATE SIGN HELPER
 # ==========================================================
 
-    async def private_ping(self) -> Dict[str, Any]:
-
-        endpoint = "/v5/account/wallet-balance"
-        url = f"{self.BASE_URL}{endpoint}"
-
-        timestamp = str(int(time.time() * 1000))
-        query_string = "accountType=UNIFIED"
+    def _sign(self, timestamp: str, payload: str) -> str:
 
         sign_payload = (
             timestamp
             + self.api_key
             + str(self.recv_window)
-            + query_string
+            + payload
         )
 
-        signature = hmac.new(
+        return hmac.new(
             self.api_secret.encode(),
             sign_payload.encode(),
             hashlib.sha256
         ).hexdigest()
+
+
+# ==========================================================
+# FETCH OPEN ORDERS (NEW)
+# ==========================================================
+
+    async def fetch_open_orders(self, symbol: str):
+
+        endpoint = "/v5/order/realtime"
+        url = f"{self.BASE_URL}{endpoint}"
+
+        timestamp = str(int(time.time() * 1000))
+
+        params = {
+            "category": "spot",
+            "symbol": symbol
+        }
+
+        query_string = f"category=spot&symbol={symbol}"
+
+        signature = self._sign(timestamp, query_string)
 
         headers = {
             "X-BAPI-API-KEY": self.api_key,
@@ -121,17 +124,15 @@ class BybitREST:
         async with session.get(
             url,
             headers=headers,
-            params={"accountType": "UNIFIED"},
+            params=params,
         ) as resp:
 
             data = await resp.json()
 
         if data.get("retCode") != 0:
-            raise Exception(f"Bybit private ping error: {data}")
+            raise Exception(f"Bybit fetch_open_orders error: {data}")
 
-        logger.info("PRIVATE_PING_OK")
-
-        return data
+        return data["result"]["list"]
 
 
 # ==========================================================
@@ -146,18 +147,7 @@ class BybitREST:
         timestamp = str(int(time.time() * 1000))
         query_string = "accountType=UNIFIED"
 
-        sign_payload = (
-            timestamp
-            + self.api_key
-            + str(self.recv_window)
-            + query_string
-        )
-
-        signature = hmac.new(
-            self.api_secret.encode(),
-            sign_payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
+        signature = self._sign(timestamp, query_string)
 
         headers = {
             "X-BAPI-API-KEY": self.api_key,
@@ -189,7 +179,7 @@ class BybitREST:
 
 
 # ==========================================================
-# Fetch OHLCV
+# FETCH OHLCV
 # ==========================================================
 
     async def fetch_ohlcv(
@@ -265,18 +255,7 @@ class BybitREST:
 
         body_str = json.dumps(body, separators=(",", ":"))
 
-        sign_payload = (
-            timestamp
-            + self.api_key
-            + str(self.recv_window)
-            + body_str
-        )
-
-        signature = hmac.new(
-            self.api_secret.encode(),
-            sign_payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
+        signature = self._sign(timestamp, body_str)
 
         headers = {
             "X-BAPI-API-KEY": self.api_key,
@@ -316,9 +295,5 @@ class BybitREST:
 
         return parsed
 
-
-# ==========================================================
-# Alias
-# ==========================================================
 
 BybitSpot = BybitREST
