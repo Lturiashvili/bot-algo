@@ -198,7 +198,7 @@ class Engine:
             log.warning("INSUFFICIENT_CAPITAL")
             return
 
-        max_positions = 5
+        max_positions = 2
         remaining_slots = max_positions - open_positions
 
         if remaining_slots <= 0:
