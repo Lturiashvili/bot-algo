@@ -29,22 +29,10 @@ class KlineMsg:
     start_ms: int
     end_ms: int
 
-    # ------------------------------------------------------
-    # BACKWARD COMPATIBILITY LAYER
-    # ------------------------------------------------------
-    # საშუალებას აძლევს ძველ კოდს გამოიყენოს msg.ts
-    # ------------------------------------------------------
-
+    # compatibility layer for old code
     @property
     def ts(self):
         return self.start_ms
-
-    # ------------------------------------------------------
-    # BACKWARD COMPATIBILITY LAYER
-    # ------------------------------------------------------
-    # საშუალებას აძლევს ძველ კოდს გამოიყენოს msg.kline.close
-    # ისე რომ crash აღარ მოხდეს
-    # ------------------------------------------------------
 
     @property
     def kline(self):
@@ -120,6 +108,12 @@ class BybitWS:
 
                     log.info("BYBIT_WS_SUB_SENT")
 
+                    # ---------------------------------
+                    # stale stream watchdog timer
+                    # ---------------------------------
+                    loop = asyncio.get_event_loop()
+                    last_msg_time = loop.time()
+
                     try:
 
                         first_msg = await asyncio.wait_for(
@@ -130,6 +124,8 @@ class BybitWS:
                         first_data = json.loads(first_msg)
 
                         log.info(f"BYBIT_WS_FIRST_MSG {first_data}")
+
+                        last_msg_time = loop.time()
 
                     except asyncio.TimeoutError:
 
@@ -143,6 +139,19 @@ class BybitWS:
 
                         if self._stop.is_set():
                             break
+
+                        now = loop.time()
+
+                        # ---------------------------------
+                        # stale stream detection
+                        # ---------------------------------
+                        if now - last_msg_time > 60:
+                            log.warning(
+                                "BYBIT_WS_STALE_STREAM_RECONNECT"
+                            )
+                            break
+
+                        last_msg_time = now
 
                         try:
 
