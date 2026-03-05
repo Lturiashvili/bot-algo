@@ -232,8 +232,7 @@ class BybitREST:
                 coin = c["coin"]
 
                 available = float(
-                    c.get("availableToWithdraw")
-                    or c.get("availableBalance")
+                    c.get("walletBalance")
                     or 0
                 )
 
