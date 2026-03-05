@@ -28,7 +28,10 @@ class PositionManager:
         bar_index: int,
     ) -> None:
 
-        # Position exists?
+        # =========================
+        # POSITION CHECK
+        # =========================
+
         if not portfolio.has_position(symbol):
             return
 
@@ -38,17 +41,16 @@ class PositionManager:
             return
 
         entry_price = pos.entry_price
-        entry_time = pos.entry_time
 
-        # Safety
         if entry_price is None or entry_price == 0:
             return
 
         pnl_pct = (price - entry_price) / entry_price
 
         # =========================
-        # DEBUG (Hedge-fund style)
+        # DEBUG LOG
         # =========================
+
         log.info(
             f"POSITION_DEBUG {symbol} "
             f"entry={entry_price:.6f} "
@@ -61,47 +63,67 @@ class PositionManager:
         # =========================
         # TAKE PROFIT
         # =========================
+
         if pnl_pct >= self.tp_pct:
 
             log.info(
                 f"TP_TRIGGER {symbol} pnl={pnl_pct:.4f}"
             )
 
-            await router.close_long(
+            order = await router.close_long(
                 exchange,
                 symbol,
                 pos.qty
             )
 
+            if not order:
+                log.error(
+                    f"SELL_FAILED {symbol}"
+                )
+                return
+
             portfolio.close(symbol)
 
-            log.info(f"POSITION_CLOSED {symbol}")
+            log.info(
+                f"SELL_EXECUTED {symbol}"
+            )
+
             return
 
         # =========================
         # STOP LOSS
         # =========================
+
         if pnl_pct <= -self.sl_pct:
 
             log.info(
                 f"SL_TRIGGER {symbol} pnl={pnl_pct:.4f}"
             )
 
-            await router.close_long(
+            order = await router.close_long(
                 exchange,
                 symbol,
                 pos.qty
             )
 
+            if not order:
+                log.error(
+                    f"SELL_FAILED {symbol}"
+                )
+                return
+
             portfolio.close(symbol)
 
-            log.info(f"POSITION_CLOSED {symbol}")
+            log.info(
+                f"SELL_EXECUTED {symbol}"
+            )
+
             return
 
         # =========================
         # TIME EXIT
         # =========================
-        # (uses candle index)
+
         try:
             entry_bar = getattr(pos, "entry_index", 0)
         except Exception:
@@ -113,12 +135,20 @@ class PositionManager:
                 f"TIME_EXIT {symbol}"
             )
 
-            await router.close_long(
+            order = await router.close_long(
                 exchange,
                 symbol,
                 pos.qty
             )
 
+            if not order:
+                log.error(
+                    f"SELL_FAILED {symbol}"
+                )
+                return
+
             portfolio.close(symbol)
 
-            log.info(f"POSITION_CLOSED {symbol}")
+            log.info(
+                f"SELL_EXECUTED {symbol}"
+            )
