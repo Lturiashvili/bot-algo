@@ -176,7 +176,7 @@ class Engine:
             return
 
         # --- MULTI TIMEFRAME BUILD ---
-        df30 = df15.resample("30T").agg({
+        df30 = df15.resample("30min").agg({
             "open": "first",
             "high": "max",
             "low": "min",
@@ -184,7 +184,7 @@ class Engine:
             "volume": "sum",
         }).dropna()
 
-        df1h = df15.resample("1H").agg({
+        df1h = df15.resample("1h").agg({
             "open": "first",
             "high": "max",
             "low": "min",
