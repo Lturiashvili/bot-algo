@@ -56,7 +56,6 @@ class Engine:
         self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
         self.router = SmartRouter()
         self.override = EnvOverrideBridge()
-
         self.execution_brain = ExecutionBrain(s, self.portfolio)
 
         self.position_manager = PositionManager(
@@ -67,7 +66,6 @@ class Engine:
 
         self._idx: dict[str, int] = {sym: 0 for sym in s.SYMBOLS}
         self._df15: dict[str, pd.DataFrame] = {}
-
         self._execution_lock: set[str] = set()
 
         limiter = TokenBucket(rate_per_sec=s.REST_RATE_PER_SEC, burst=s.REST_BURST)
@@ -91,6 +89,10 @@ class Engine:
             )
 
             self.ws = BybitWS(s.BYBIT_WS_URL)
+
+    # ===============================
+    # HISTORY SEED
+    # ===============================
 
     async def seed_history(self, symbol: str) -> None:
 
@@ -120,7 +122,7 @@ class Engine:
         self._df15[symbol] = df
 
     # ===============================
-    # FIXED POSITION SYNC
+    # POSITION SYNC
     # ===============================
 
     async def sync_positions(self):
@@ -144,7 +146,7 @@ class Engine:
                 self.portfolio.sync_position(
                     symbol=symbol,
                     qty=amount,
-                    entry_price=price
+                    entry_price=price,
                 )
 
                 log.info(f"SYNC_POSITION {symbol} qty={amount} entry_price={price}")
@@ -152,6 +154,10 @@ class Engine:
         except Exception as e:
 
             log.warning(f"POSITION_SYNC_FAILED {e}")
+
+    # ===============================
+    # OPEN POSITION
+    # ===============================
 
     async def maybe_open_position(self, symbol: str, idx: int) -> None:
 
@@ -169,10 +175,27 @@ class Engine:
         if len(df15) < 50:
             return
 
+        # --- MULTI TIMEFRAME BUILD ---
+        df30 = df15.resample("30T").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }).dropna()
+
+        df1h = df15.resample("1H").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }).dropna()
+
         sig = compute_long_signal(
             df15,
-            df15,
-            df15,
+            df30,
+            df1h,
             self.s.EMA_FAST,
             self.s.EMA_SLOW,
             self.s.RSI_PERIOD,
@@ -217,7 +240,7 @@ class Engine:
             order = await self.router.open_long(
                 self.ex,
                 symbol,
-                position_size
+                position_size,
             )
 
             if not order:
@@ -240,6 +263,7 @@ class Engine:
                 entry_idx=idx,
             )
 
+            # --- OCO PROTECTION ---
             oco_ok = False
 
             for attempt in range(3):
@@ -250,7 +274,7 @@ class Engine:
                         self.ex,
                         symbol,
                         qty,
-                        price
+                        price,
                     )
 
                     await asyncio.sleep(1)
@@ -274,7 +298,7 @@ class Engine:
                     await self.router.close_position(
                         self.ex,
                         symbol,
-                        qty
+                        qty,
                     )
 
                     log.critical(f"EMERGENCY_CLOSE_EXECUTED {symbol}")
@@ -291,6 +315,10 @@ class Engine:
 
             self._execution_lock.discard(symbol)
 
+    # ===============================
+    # MAIN LOOP
+    # ===============================
+
     async def run_live(self) -> None:
 
         await self.db.init()
@@ -306,7 +334,7 @@ class Engine:
 
                 async for msg in self.ws.stream_klines(
                     list(self.s.SYMBOLS),
-                    self.s.PRIMARY_TF
+                    self.s.PRIMARY_TF,
                 ):
 
                     if not msg.is_closed:
@@ -338,7 +366,10 @@ class Engine:
                         log.warning("GLOBAL KILL SWITCH ACTIVE")
                         continue
 
-                    await self.maybe_open_position(msg.symbol, self._idx[msg.symbol])
+                    await self.maybe_open_position(
+                        msg.symbol,
+                        self._idx[msg.symbol],
+                    )
 
                     price = msg.kline.close
 
