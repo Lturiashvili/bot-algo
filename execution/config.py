@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def default_symbols() -> list[str]:
+    """სწორი default_factory ფუნქცია SYMBOLS-ისთვის"""
     env_value = os.getenv("SYMBOLS", "BTCUSDT,SOLUSDT")
     return [s.strip().upper() for s in env_value.split(",") if s.strip()]
 
