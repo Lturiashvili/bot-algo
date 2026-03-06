@@ -206,14 +206,20 @@ class Engine:
         log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
 
         try:
-            test_quote_usdt = 5
+            balance = await self.ex.get_balance("USDT")
 
-            log.info(f"EXECUTION_START {symbol} size={test_quote_usdt}USDT")
+            position_pct = 0.20
+
+            size_usdt = round(balance * position_pct, 2)
+            
+            if size_usdt < 5.0:
+               size_usdt = 5.0
+            log.info(f"POSITION_SIZE {symbol} balance={balance} size={size_usdt}")
 
             order = await self.router.open_long(
                 self.ex,
                 symbol,
-                test_quote_usdt
+                size_usdt
             )
 
             log.info(
