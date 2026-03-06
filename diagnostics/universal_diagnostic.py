@@ -92,25 +92,24 @@ logger.info("═" * 80)
 logger.info("MODULE IMPORT DISCOVERY")
 
 COMMON_IMPORTS = [
-    "config",
-    "database",
-    "portfolio",
-    "risk",
-    "risk.manager",
-    "smart_router",
-    "strategy",
-    "strategy.orderbook_alpha",
-    "execution",
-    "execution_brain",
-    "trade_manager",
-    "position_manager",
-    "exchange",
-    "exchange.binance_rest",
-    "exchange.bybit_rest",
-    "exchange.binance_ws",
-    "exchange.bybit_ws",
-    "ml",
-    "ml.signal_model",
+
+    "execution.config",
+    "execution.database",
+    "execution.portfolio",
+    "execution.risk",
+    "execution.risk.manager",
+    "execution.smart_router",
+    "execution.strategy",
+    "execution.strategy.orderbook_alpha",
+    "execution.execution_brain",
+    "execution.trade_manager",
+    "execution.position_manager",
+    "execution.exchange",
+    "execution.exchange.binance_rest",
+    "execution.exchange.bybit_rest",
+    "execution.exchange.binance_ws",
+    "execution.exchange.bybit_ws",
+
     "ui.env_override"
 ]
 
