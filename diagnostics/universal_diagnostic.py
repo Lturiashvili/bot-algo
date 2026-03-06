@@ -126,7 +126,7 @@ for module in COMMON_IMPORTS:
 
     except Exception as e:
 
-        logger.error("❌ IMPORT ERROR DETECTED")
+        logger.error("BUG DETECTED")
         logger.error(f"MODULE → {module}")
 
         tb = traceback.extract_tb(e.__traceback__)
