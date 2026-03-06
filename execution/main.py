@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-import os
+from typing import Dict
 
 import pandas as pd
 
@@ -18,30 +18,33 @@ from execution.ml.signal_model import MLSignalFilter
 from execution.portfolio import Portfolio
 from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
-from execution.execution_brain import ExecutionBrain
-from execution.position_manager import PositionManager
 from execution.strategy.orderbook_alpha import compute_long_signal
-from ui.env_override import EnvOverrideBridge
+
 
 logging.basicConfig(
     level=Settings().LOG_LEVEL,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
-log = logging.getLogger("main")
+log = logging.getLogger("engine")
 
 
-def _ms_to_dt(ms: int) -> datetime:
-    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+def _ms_to_dt(ms: int):
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
 
 
 class Engine:
 
-    def __init__(self, s: Settings) -> None:
+    def __init__(self, s: Settings):
 
         self.s = s
         self.db = TradeDB(s.DB_PATH)
+
         self.portfolio = Portfolio()
+
+        self.router = SmartRouter()
+
+        self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
 
         self.risk = RiskManager(
             position_pct=s.POSITION_PCT,
@@ -53,23 +56,12 @@ class Engine:
             partial_tp_pct=s.PARTIAL_TP_PCT,
         )
 
-        self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
-        self.router = SmartRouter()
-        self.override = EnvOverrideBridge()
-        self.execution_brain = ExecutionBrain(s, self.portfolio)
+        self._df: Dict[str, pd.DataFrame] = {}
 
-        self.position_manager = PositionManager(
-            tp_pct=0.002,
-            sl_pct=0.01,
-            max_bars=30,
-        )
+        self._idx = {s: 0 for s in self.s.SYMBOLS}
 
-        self._idx: dict[str, int] = {sym: 0 for sym in s.SYMBOLS}
-
-        # 5m base dataframe
-        self._df5: dict[str, pd.DataFrame] = {}
-
-        self._execution_lock: set[str] = set()
+        # execution race fix
+        self._locks = {s: asyncio.Lock() for s in self.s.SYMBOLS}
 
         limiter = TokenBucket(rate_per_sec=s.REST_RATE_PER_SEC, burst=s.REST_BURST)
 
@@ -93,16 +85,61 @@ class Engine:
 
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
-    async def seed_history(self, symbol: str) -> None:
+    # -------------------------------------------------
+    # REST RETRY
+    # -------------------------------------------------
 
-        log.info(f"FETCH_OHLCV_START {symbol}")
+    async def safe_rest(self, fn, *args, retries=3):
 
-        candles = await asyncio.wait_for(
-            self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=600),
-            timeout=15,
+        for i in range(retries):
+
+            try:
+                return await fn(*args)
+
+            except Exception as e:
+
+                log.warning(f"REST_RETRY {fn.__name__} {i} {e}")
+
+                await asyncio.sleep(1 + i)
+
+        raise RuntimeError("REST failed")
+
+    # -------------------------------------------------
+    # STARTUP SYNC
+    # -------------------------------------------------
+
+    async def sync_with_exchange(self):
+
+        try:
+
+            positions = await self.safe_rest(self.ex.fetch_positions)
+
+            for p in positions:
+
+                symbol = p["symbol"]
+
+                if float(p["size"]) > 0:
+
+                    log.info(f"SYNC_POSITION {symbol}")
+
+                    self.portfolio.register_position(symbol)
+
+        except Exception as e:
+
+            log.warning(f"SYNC_FAILED {e}")
+
+    # -------------------------------------------------
+    # HISTORY
+    # -------------------------------------------------
+
+    async def seed_history(self, symbol):
+
+        candles = await self.safe_rest(
+            self.ex.fetch_ohlcv,
+            symbol,
+            self.s.PRIMARY_TF,
+            600,
         )
-
-        log.info(f"FETCH_OHLCV_DONE {symbol}")
 
         df = pd.DataFrame(
             [
@@ -118,26 +155,47 @@ class Engine:
             ]
         ).set_index("ts")
 
-        self._df5[symbol] = df
+        self._df[symbol] = df
 
-    async def maybe_open_position(self, symbol: str, idx: int) -> None:
+    # -------------------------------------------------
+    # POSITION SIZE
+    # -------------------------------------------------
 
-        if symbol in self._execution_lock:
+    async def compute_size(self):
+
+        balance = await self.safe_rest(self.ex.fetch_usdt_balance)
+
+        size = balance * self.s.POSITION_PCT
+
+        if size < 3:
+            return None
+
+        return size
+
+    # -------------------------------------------------
+    # EXIT DETECTION
+    # -------------------------------------------------
+
+    async def check_position_exit(self, symbol):
+
+        if not self.portfolio.has_position(symbol):
             return
 
-        if self.portfolio.has_position(symbol):
-            return
+        pos = await self.safe_rest(self.ex.fetch_position, symbol)
 
-        if self.portfolio.in_cooldown(symbol, idx):
-            return
+        if not pos or float(pos["size"]) == 0:
 
-        df5 = self._df5[symbol]
+            log.info(f"POSITION_CLOSED {symbol}")
 
-        if len(df5) < 50:
-            return
+            self.portfolio.close_position(symbol)
 
-        # multi timeframe build
-        df15 = df5.resample("15min").agg({
+    # -------------------------------------------------
+    # SIGNAL
+    # -------------------------------------------------
+
+    def build_tf(self, df):
+
+        df2 = df.resample(self.s.SECONDARY_TF).agg({
             "open": "first",
             "high": "max",
             "low": "min",
@@ -145,7 +203,7 @@ class Engine:
             "volume": "sum",
         }).dropna()
 
-        df30 = df5.resample("30min").agg({
+        df3 = df.resample(self.s.CONFIRM_TF).agg({
             "open": "first",
             "high": "max",
             "low": "min",
@@ -153,18 +211,69 @@ class Engine:
             "volume": "sum",
         }).dropna()
 
-        df1h = df5.resample("1h").agg({
+        df4 = df.resample("1h").agg({
             "open": "first",
             "high": "max",
             "low": "min",
             "close": "last",
             "volume": "sum",
         }).dropna()
+
+        return df2, df3, df4
+
+    # -------------------------------------------------
+    # TRADE EXECUTION
+    # -------------------------------------------------
+
+    async def execute_trade(self, symbol, signal):
+
+        async with self._locks[symbol]:
+
+            if self.portfolio.has_position(symbol):
+                return
+
+            if self.portfolio.in_cooldown(symbol, self._idx[symbol]):
+                return
+
+            size = await self.compute_size()
+
+            if not size:
+                return
+
+            order = await self.safe_rest(
+                self.router.open_long,
+                self.ex,
+                symbol,
+                size,
+            )
+
+            if not order:
+
+                log.error("ORDER_FAILED")
+
+                return
+
+            log.info(f"ORDER_OPENED {symbol}")
+
+            self.portfolio.register_position(symbol)
+
+    # -------------------------------------------------
+    # STRATEGY
+    # -------------------------------------------------
+
+    async def maybe_open_position(self, symbol):
+
+        df = self._df[symbol]
+
+        if len(df) < 50:
+            return
+
+        df2, df3, df4 = self.build_tf(df)
 
         sig = compute_long_signal(
-            df15,
-            df30,
-            df1h,
+            df2,
+            df3,
+            df4,
             self.s.EMA_FAST,
             self.s.EMA_SLOW,
             self.s.RSI_PERIOD,
@@ -172,38 +281,86 @@ class Engine:
             self.s.ATR_PERIOD,
         )
 
-        if sig is None or sig.action != "BUY":
+        if not sig:
             return
 
-        if self.s.ML_ENABLED and not self.ml.allow(sig.features):
+        if sig.action != "BUY":
             return
 
-        capital = await self.ex.fetch_usdt_balance()
+        if self.s.ML_ENABLED:
 
-        if capital < 3:
-            return
+            if not self.ml.allow(sig.features):
 
-        self._execution_lock.add(symbol)
+                log.info("ML_BLOCK")
 
-        try:
-
-            order = await self.router.open_long(
-                self.ex,
-                symbol,
-                capital,
-            )
-
-            if not order:
                 return
 
-        finally:
+        await self.execute_trade(symbol, sig)
 
-            self._execution_lock.discard(symbol)
+    # -------------------------------------------------
+    # CANDLE UPDATE
+    # -------------------------------------------------
 
-    async def run_live(self) -> None:
+    def update_candle(self, symbol, msg):
 
-        for sym in self.s.SYMBOLS:
-            await self.seed_history(sym)
+        df = self._df[symbol]
+
+        ts = _ms_to_dt(msg.ts)
+
+        candle = {
+        "open": msg.kline.open,
+        "high": msg.kline.high,
+        "low": msg.kline.low,
+        "close": msg.kline.close,
+        "volume": msg.kline.volume,
+    }
+
+    # -----------------------------------------
+    # duplicate candle protection
+    # -----------------------------------------
+
+    if ts in df.index:
+        df.loc[ts] = candle
+        return
+
+    # -----------------------------------------
+    # out-of-order protection
+    # -----------------------------------------
+
+    if len(df) > 0:
+
+        last_ts = df.index[-1]
+
+        if ts < last_ts:
+
+            log.warning(
+                f"CANDLE_OUT_OF_ORDER {symbol} ts={ts} last={last_ts}"
+            )
+
+            return
+
+    # -----------------------------------------
+    # append new candle
+    # -----------------------------------------
+
+    df.loc[ts] = candle
+
+
+    # increment only on NEW candle
+    self._idx[symbol] += 1
+
+    # -------------------------------------------------
+    # ENGINE LOOP
+    # -------------------------------------------------
+
+    async def run(self):
+
+        log.info("ENGINE_START")
+
+        await self.sync_with_exchange()
+
+        for s in self.s.SYMBOLS:
+            await self.seed_history(s)
 
         async for msg in self.ws.stream_klines(
             list(self.s.SYMBOLS),
@@ -213,32 +370,20 @@ class Engine:
             if not msg.is_closed:
                 continue
 
-            df = self._df5[msg.symbol]
+            self.update_candle(msg.symbol, msg)
 
-            df.loc[_ms_to_dt(msg.ts)] = {
-                "open": msg.kline.open,
-                "high": msg.kline.high,
-                "low": msg.kline.low,
-                "close": msg.kline.close,
-                "volume": msg.kline.volume,
-            }
+            await self.check_position_exit(msg.symbol)
 
-            self._df5[msg.symbol] = df
-
-            self._idx[msg.symbol] += 1
-
-            await self.maybe_open_position(
-                msg.symbol,
-                self._idx[msg.symbol],
-            )
+            await self.maybe_open_position(msg.symbol)
 
 
-async def main() -> None:
+async def main():
 
     s = Settings()
+
     engine = Engine(s)
 
-    await engine.run_live()
+    await engine.run()
 
 
 if __name__ == "__main__":
