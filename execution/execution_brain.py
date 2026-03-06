@@ -1,179 +1,65 @@
-
 import time
 import logging
+from typing import Optional, Dict
 
 logger = logging.getLogger("execution_brain")
 
-
 class ExecutionBrain:
-    """
-    Adaptive Market Matrix / Execution Brain
-
-    Responsibilities:
-    - Trade rate limiting
-    - Symbol cooldown protection
-    - Exposure-aware trade decisions
-    - Regime-aware position sizing
-    """
-
     def __init__(self, config, portfolio):
-
         self.config = config
         self.portfolio = portfolio
 
-        # symbol -> last trade timestamp
-        self.symbol_cooldowns = {}
+        self.last_trade_timestamps = []
+        self.symbol_last_trade: Dict[str, float] = {}
 
-        # list of timestamps of recent trades
-        self.trade_timestamps = []
+    def can_trade_symbol(self, symbol: str, now: float) -> bool:
+        last = self.symbol_last_trade.get(symbol, 0)
+        cooldown_sec = getattr(self.config, 'SYMBOL_COOLDOWN_SECONDS', 1800)  # 30 წუთი default
+        return now - last >= cooldown_sec
 
-    # ------------------------------------------------
-    # MAIN ENTRY POINT
-    # ------------------------------------------------
+    def can_trade_global(self, now: float) -> bool:
+        window_sec = getattr(self.config, 'MAX_TRADES_WINDOW_SECONDS', 3600)     # 1 საათი
+        max_in_window = getattr(self.config, 'MAX_TRADES_PER_WINDOW', 5)
 
-    def evaluate_trade(
+        self.last_trade_timestamps = [t for t in self.last_trade_timestamps if now - t < window_sec]
+        return len(self.last_trade_timestamps) < max_in_window
+
+    def approve_trade(
         self,
-        symbol,
-        signal,
-        signal_score,
-        regime,
-    ):
-
+        symbol: str,
+        signal_strength: float = 1.0,
+        regime: str = "NEUTRAL"
+    ) -> Optional[dict]:
         now = time.time()
 
-        if signal != "BUY":
+        if not self.can_trade_global(now):
+            logger.info("გლობალური თროთლი → უარი")
             return None
 
-        # 1️⃣ Global trade throttle
-        if not self._check_trade_rate(now):
-            logger.info("EXEC_BRAIN_THROTTLE")
+        if not self.can_trade_symbol(symbol, now):
+            logger.info(f"სიმბოლოს cooldown აქტიურია: {symbol}")
             return None
 
-        # 2️⃣ Symbol cooldown
-        if self._symbol_cooldown_active(symbol, now):
-            logger.info(f"EXEC_BRAIN_SYMBOL_COOLDOWN {symbol}")
+        exposure = self.portfolio.current_exposure()
+        max_exposure = getattr(self.config, 'MAX_EXPOSURE_POSITIONS', 4)
+
+        if exposure >= max_exposure:
+            logger.info(f"მაქსიმალური ექსპოზიცია მიღწეულია ({exposure}/{max_exposure})")
             return None
 
-        # 3️⃣ Portfolio exposure
-        exposure = self._get_exposure()
+        # რეჟიმის მიხედვით size multiplier (შეგიძლია გააფართოვო)
+        size_mult = 1.0
+        if regime == "BULL" and signal_strength > 0.75:
+            size_mult = 1.0
+        elif regime == "RANGE":
+            size_mult = 0.6
+        elif regime == "BEAR":
+            size_mult = 0.4
+        else:
+            size_mult = 0.7
 
-        # 4️⃣ Decision matrix
-        size_multiplier = self._matrix_decision(
-            regime,
-            signal_score,
-            exposure
-        )
+        # თუ ყველაფერი კარგადაა → დავამტკიცოთ
+        self.last_trade_timestamps.append(now)
+        self.symbol_last_trade[symbol] = now
 
-        if size_multiplier is None:
-            logger.info("EXEC_BRAIN_REJECTED")
-            return None
-
-        # 5️⃣ Register trade
-        self._register_trade(symbol, now)
-
-        logger.info(
-            f"EXEC_BRAIN_APPROVED symbol={symbol} "
-            f"size_mult={size_multiplier} "
-            f"regime={regime} "
-            f"score={signal_score:.2f} "
-            f"exposure={exposure:.2f}"
-        )
-
-        return {
-            "symbol": symbol,
-            "size_multiplier": size_multiplier,
-        }
-
-    # ------------------------------------------------
-    # TRADE RATE CONTROL
-    # ------------------------------------------------
-
-    def _check_trade_rate(self, now):
-
-        window = self.config.MAX_TRADES_WINDOW
-        limit = self.config.MAX_TRADES_PER_WINDOW
-
-        self.trade_timestamps = [
-            t for t in self.trade_timestamps
-            if now - t < window
-        ]
-
-        if len(self.trade_timestamps) >= limit:
-            return False
-
-        return True
-
-    # ------------------------------------------------
-    # SYMBOL COOLDOWN
-    # ------------------------------------------------
-
-    def _symbol_cooldown_active(self, symbol, now):
-
-        cooldown = self.config.SYMBOL_COOLDOWN
-
-        last_trade = self.symbol_cooldowns.get(symbol)
-
-        if last_trade is None:
-            return False
-
-        return (now - last_trade) < cooldown
-
-    # ------------------------------------------------
-    # PORTFOLIO EXPOSURE
-    # ------------------------------------------------
-
-    def _get_exposure(self):
-
-        try:
-            return self.portfolio.current_exposure()
-        except Exception:
-            # fallback if portfolio object doesn't yet implement exposure
-            return 0.0
-
-    # ------------------------------------------------
-    # DECISION MATRIX
-    # ------------------------------------------------
-
-def _matrix_decision(self, regime, score, exposure):
-
-    # Bull market
-    if regime == "BULL":
-
-        if score > 75 and exposure < 0.4:
-            return 1.0
-
-        if score > 70 and exposure < 0.6:
-            return 0.6
-
-
-    # Neutral market
-    if regime == "NEUTRAL":
-
-        if score > 65 and exposure < 0.5:
-            return 0.5
-
-
-    # Range market
-    if regime == "RANGE":
-
-        if score > 80 and exposure < 0.5:
-            return 0.5
-
-
-    # Bear market
-    if regime == "BEAR":
-
-        if score > 85 and exposure < 0.2:
-            return 0.3
-
-
-    return None
-
-    # ------------------------------------------------
-    # REGISTER TRADE
-    # ------------------------------------------------
-
-    def _register_trade(self, symbol, now):
-
-        self.trade_timestamps.append(now)
-        self.symbol_cooldowns[symbol] = now
+        return {"approved": True, "size_multiplier": size_mult}
