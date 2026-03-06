@@ -24,7 +24,7 @@ class Settings:
     SYMBOLS: list[str] = tuple(s.strip().upper() for s in os.getenv("SYMBOLS", "BTCUSDT,SOLUSDT").split(",") if s.strip())  # type: ignore
     PRIMARY_TF: str = os.getenv("PRIMARY_TF", "5m")
     SECONDARY_TF: str = os.getenv("SECONDARY_TF", "15m")
-    CONFIRM_TF: str = os.getenv("CONFIRM_TF", "30")
+    CONFIRM_TF: str = os.getenv("CONFIRM_TF", "30m")
 
     # Strategy defaults
     EMA_FAST: int = int(os.getenv("EMA_FAST", "6"))
