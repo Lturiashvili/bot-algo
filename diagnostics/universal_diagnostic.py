@@ -14,6 +14,8 @@ import time
 import traceback
 from datetime import datetime
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s",
