@@ -48,13 +48,13 @@ logger.info("ENVIRONMENT VARIABLES CHECK")
 
 COMMON_ENV = [
     "EXCHANGE",
-    "API_KEY",
-    "API_SECRET",
+    "BYBIT_API_KEY",
+    "BYBIT_API_SECRET",
     "SYMBOLS",
     "LOG_LEVEL",
     "PRIMARY_TF",
     "SECONDARY_TF",
-    "CONFIRM_TF"
+    "CONFIRM_TF",
 ]
 
 for var in COMMON_ENV:
