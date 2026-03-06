@@ -1,172 +1,73 @@
 from __future__ import annotations
-
-import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
-
-log = logging.getLogger("portfolio")
-
-
-# ==========================================
-# POSITION OBJECT
-# ==========================================
+from typing import Optional, Dict
+import time
 
 @dataclass
 class Position:
-
     symbol: str
     qty: float
     entry_price: float
-
     entry_time: datetime
-    entry_index: int
-
-    best_price: float = 0.0
-    trade_id: int = 0
+    entry_idx: int
+    atr_at_entry: float
+    stop_price: float
+    tp_price: float
+    best_price: float
+    trailing_stop: float
+    trailing_enabled: bool = True
     partial_done: bool = False
+    trade_id: Optional[int] = None
 
-
-# ==========================================
-# PORTFOLIO MANAGER
-# ==========================================
-
-@dataclass
 class Portfolio:
-
-    positions: dict[str, Position] = field(default_factory=dict)
-
-    cooldown_until_ts: dict[str, float] = field(default_factory=dict)
-
-    cooldown_seconds: int = 900   # 15 minutes
-
-
-    # ======================================
-    # POSITION QUERIES
-    # ======================================
+    def __init__(self):
+        self.positions: Dict[str, Position] = {}
+        self.cooldown_until: Dict[str, float] = {}
+        self.trade_id_counter = 0
 
     def has_position(self, symbol: str) -> bool:
         return symbol in self.positions
 
-
     def get(self, symbol: str) -> Optional[Position]:
         return self.positions.get(symbol)
-
 
     def count_open_positions(self) -> int:
         return len(self.positions)
 
+    def current_exposure(self) -> float:
+        return len(self.positions)  # შეგიძლია გააფართოვო real USDT-ით
 
-    # ======================================
-    # OPEN POSITION (BUY EXECUTION)
-    # ======================================
-
-    def open_position(
-        self,
-        symbol: str,
-        qty: float,
-        entry_price: float,
-        entry_idx: int,
-    ) -> None:
-
-        if symbol in self.positions:
-
-            log.warning(f"DUPLICATE_POSITION_BLOCKED {symbol}")
-            return
-
-        p = Position(
+    def open(self, symbol: str, qty: float, entry_price: float, atr: float,
+             stop: float, tp: float, idx: int) -> int:
+        self.trade_id_counter += 1
+        pos = Position(
             symbol=symbol,
             qty=qty,
             entry_price=entry_price,
-            entry_time=self.now(),
-            entry_index=entry_idx,
+            entry_time=datetime.now(timezone.utc),
+            entry_idx=idx,
+            atr_at_entry=atr,
+            stop_price=stop,
+            tp_price=tp,
             best_price=entry_price,
+            trailing_stop=stop,
+            trade_id=self.trade_id_counter
         )
-
-        self.positions[symbol] = p
-
-        log.info(
-            f"POSITION_OPENED "
-            f"{symbol} qty={qty} entry={entry_price}"
-        )
-
-
-    # ======================================
-    # CLOSE POSITION (SELL EXECUTION)
-    # ======================================
+        self.positions[symbol] = pos
+        self.cooldown_until[symbol] = time.time() + 900 * 3  # 3 candle cooldown
+        return pos.trade_id
 
     def close(self, symbol: str) -> None:
+        self.positions.pop(symbol, None)
+        self.cooldown_until.pop(symbol, None)
 
-        if symbol not in self.positions:
-            return
+    def in_cooldown(self, symbol: str) -> bool:
+        return time.time() < self.cooldown_until.get(symbol, 0)
 
-        del self.positions[symbol]
-
-        self.cooldown_until_ts[symbol] = (
-            time.time() + self.cooldown_seconds
-        )
-
-        log.info(f"POSITION_REMOVED {symbol}")
-
-
-    # ======================================
-    # COOLDOWN CHECK
-    # ======================================
-
-    def in_cooldown(self, symbol: str, idx: int) -> bool:
-
-        until = self.cooldown_until_ts.get(symbol, 0.0)
-
-        if time.time() < until:
-
-            remaining = int(until - time.time())
-
-            log.info(
-                f"COOLDOWN_ACTIVE {symbol} "
-                f"remaining={remaining}s"
-            )
-
-            return True
-
-        return False
-
-
-    # ======================================
-    # SYNC POSITION FROM EXCHANGE
-    # ======================================
-
-    def sync_position(
-        self,
-        symbol: str,
-        qty: float,
-        entry_price: float,
-    ) -> None:
-
+    def update_trailing(self, symbol: str, current_price: float, atr: float):
         if symbol in self.positions:
-            return
-
-        p = Position(
-            symbol=symbol,
-            qty=qty,
-            entry_price=entry_price,
-            entry_time=self.now(),
-            entry_index=0,
-            best_price=entry_price,
-        )
-
-        self.positions[symbol] = p
-
-        log.info(
-            f"SYNC_POSITION "
-            f"{symbol} qty={qty} entry={entry_price}"
-        )
-
-
-    # ======================================
-    # TIME UTILITY
-    # ======================================
-
-    @staticmethod
-    def now() -> datetime:
-        return datetime.now(timezone.utc)
+            pos = self.positions[symbol]
+            if current_price > pos.best_price:
+                pos.best_price = current_price
+                pos.trailing_stop = current_price - atr * 1.5
