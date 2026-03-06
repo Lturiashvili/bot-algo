@@ -41,7 +41,6 @@ class Engine:
         self.db = TradeDB(s.DB_PATH)
 
         self.portfolio = Portfolio()
-
         self.router = SmartRouter()
 
         self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
@@ -57,11 +56,9 @@ class Engine:
         )
 
         self._df: Dict[str, pd.DataFrame] = {}
+        self._idx = {sym: 0 for sym in self.s.SYMBOLS}
 
-        self._idx = {s: 0 for s in self.s.SYMBOLS}
-
-        # execution race fix
-        self._locks = {s: asyncio.Lock() for s in self.s.SYMBOLS}
+        self._locks = {sym: asyncio.Lock() for sym in self.s.SYMBOLS}
 
         limiter = TokenBucket(rate_per_sec=s.REST_RATE_PER_SEC, burst=s.REST_BURST)
 
@@ -85,28 +82,21 @@ class Engine:
 
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
-    # -------------------------------------------------
-    # REST RETRY
-    # -------------------------------------------------
+    # ---------------- REST RETRY ----------------
 
     async def safe_rest(self, fn, *args, retries=3):
 
         for i in range(retries):
-
             try:
                 return await fn(*args)
 
             except Exception as e:
-
                 log.warning(f"REST_RETRY {fn.__name__} {i} {e}")
-
                 await asyncio.sleep(1 + i)
 
         raise RuntimeError("REST failed")
 
-    # -------------------------------------------------
-    # STARTUP SYNC
-    # -------------------------------------------------
+    # ---------------- STARTUP SYNC ----------------
 
     async def sync_with_exchange(self):
 
@@ -119,18 +109,13 @@ class Engine:
                 symbol = p["symbol"]
 
                 if float(p["size"]) > 0:
-
                     log.info(f"SYNC_POSITION {symbol}")
-
                     self.portfolio.register_position(symbol)
 
         except Exception as e:
-
             log.warning(f"SYNC_FAILED {e}")
 
-    # -------------------------------------------------
-    # HISTORY
-    # -------------------------------------------------
+    # ---------------- HISTORY ----------------
 
     async def seed_history(self, symbol):
 
@@ -157,9 +142,7 @@ class Engine:
 
         self._df[symbol] = df
 
-    # -------------------------------------------------
-    # POSITION SIZE
-    # -------------------------------------------------
+    # ---------------- POSITION SIZE ----------------
 
     async def compute_size(self):
 
@@ -172,9 +155,7 @@ class Engine:
 
         return size
 
-    # -------------------------------------------------
-    # EXIT DETECTION
-    # -------------------------------------------------
+    # ---------------- EXIT DETECTION ----------------
 
     async def check_position_exit(self, symbol):
 
@@ -189,9 +170,7 @@ class Engine:
 
             self.portfolio.close_position(symbol)
 
-    # -------------------------------------------------
-    # SIGNAL
-    # -------------------------------------------------
+    # ---------------- SIGNAL ----------------
 
     def build_tf(self, df):
 
@@ -221,9 +200,7 @@ class Engine:
 
         return df2, df3, df4
 
-    # -------------------------------------------------
-    # TRADE EXECUTION
-    # -------------------------------------------------
+    # ---------------- EXECUTION ----------------
 
     async def execute_trade(self, symbol, signal):
 
@@ -250,16 +227,13 @@ class Engine:
             if not order:
 
                 log.error("ORDER_FAILED")
-
                 return
 
             log.info(f"ORDER_OPENED {symbol}")
 
             self.portfolio.register_position(symbol)
 
-    # -------------------------------------------------
-    # STRATEGY
-    # -------------------------------------------------
+    # ---------------- STRATEGY ----------------
 
     async def maybe_open_position(self, symbol):
 
@@ -288,18 +262,13 @@ class Engine:
             return
 
         if self.s.ML_ENABLED:
-
             if not self.ml.allow(sig.features):
-
                 log.info("ML_BLOCK")
-
                 return
 
         await self.execute_trade(symbol, sig)
 
-    # -------------------------------------------------
-    # CANDLE UPDATE
-    # -------------------------------------------------
+    # ---------------- CANDLE UPDATE ----------------
 
     def update_candle(self, symbol, msg):
 
@@ -308,50 +277,38 @@ class Engine:
         ts = _ms_to_dt(msg.ts)
 
         candle = {
-        "open": msg.kline.open,
-        "high": msg.kline.high,
-        "low": msg.kline.low,
-        "close": msg.kline.close,
-        "volume": msg.kline.volume,
-    }
+            "open": msg.kline.open,
+            "high": msg.kline.high,
+            "low": msg.kline.low,
+            "close": msg.kline.close,
+            "volume": msg.kline.volume,
+        }
 
-    # -----------------------------------------
-    # duplicate candle protection
-    # -----------------------------------------
-
-    if ts in df.index:
-        df.loc[ts] = candle
-        return
-
-    # -----------------------------------------
-    # out-of-order protection
-    # -----------------------------------------
-
-    if len(df) > 0:
-
-        last_ts = df.index[-1]
-
-        if ts < last_ts:
-
-            log.warning(
-                f"CANDLE_OUT_OF_ORDER {symbol} ts={ts} last={last_ts}"
-            )
+        # duplicate candle protection
+        if ts in df.index:
+            df.loc[ts] = candle
             return
-            
 
-    # -----------------------------------------
-    # append new candle
-    # -----------------------------------------
+        # out-of-order protection
+        if len(df) > 0:
 
-    df.loc[ts] = candle
+            last_ts = df.index[-1]
 
+            if ts < last_ts:
 
-    # increment only on NEW candle
-    self._idx[symbol] += 1
+                log.warning(
+                    f"CANDLE_OUT_OF_ORDER {symbol} ts={ts} last={last_ts}"
+                )
 
-    # -------------------------------------------------
-    # ENGINE LOOP
-    # -------------------------------------------------
+                return
+
+        # append new candle
+        df.loc[ts] = candle
+
+        # increment index only on new candle
+        self._idx[symbol] += 1
+
+    # ---------------- ENGINE LOOP ----------------
 
     async def run(self):
 
