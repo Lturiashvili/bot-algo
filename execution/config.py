@@ -27,11 +27,11 @@ class Settings:
     CONFIRM_TF: str = os.getenv("CONFIRM_TF", "30")
 
     # Strategy defaults
-    EMA_FAST: int = int(os.getenv("EMA_FAST", "50"))
-    EMA_SLOW: int = int(os.getenv("EMA_SLOW", "200"))
-    RSI_PERIOD: int = int(os.getenv("RSI_PERIOD", "14"))
-    RSI_LONG_MIN: float = float(os.getenv("RSI_LONG_MIN", "55"))
-    ATR_PERIOD: int = int(os.getenv("ATR_PERIOD", "14"))
+    EMA_FAST: int = int(os.getenv("EMA_FAST", "6"))
+    EMA_SLOW: int = int(os.getenv("EMA_SLOW", "12"))
+    RSI_PERIOD: int = int(os.getenv("RSI_PERIOD", "6"))
+    RSI_LONG_MIN: float = float(os.getenv("RSI_LONG_MIN", "45"))
+    ATR_PERIOD: int = int(os.getenv("ATR_PERIOD", "6"))
 
     # Risk
     POSITION_PCT: float = float(os.getenv("POSITION_PCT", "0.20"))  # 3% balance in USDT
