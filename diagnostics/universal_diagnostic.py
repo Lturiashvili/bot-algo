@@ -23,11 +23,12 @@ logging.basicConfig(
 
 logger = logging.getLogger("UNIVERSAL_DIAG")
 
-logger.info("═" * 80)
+logger.info("=" * 80)
+logger.info("JAIANI UNIVERSAL DIAGNOSTIC ENGINE")
 logger.info("🚀 UNIVERSAL BOT DIAGNOSTIC STARTED")
-logger.info(f"Time:          {datetime.now()}")
-logger.info(f"Python:        {sys.version}")
-logger.info(f"Working dir:   {os.getcwd()}")
+logger.info(f"Time: {datetime.now()}")
+logger.info(f"Python: {sys.version}")
+logger.info(f"Working dir: {os.getcwd()}")
 
 try:
     logger.info(f"Directory: {os.listdir('.')}")
@@ -114,11 +115,31 @@ COMMON_IMPORTS = [
 ]
 
 for module in COMMON_IMPORTS:
+
     try:
+
         importlib.import_module(module)
+
         logger.info(f"✅ IMPORT OK → {module}")
+
     except Exception as e:
-        logger.warning(f"❌ IMPORT FAIL → {module} | {type(e).__name__}")
+
+        logger.error("❌ IMPORT ERROR DETECTED")
+        logger.error(f"MODULE → {module}")
+
+        tb = traceback.extract_tb(e.__traceback__)
+
+        if tb:
+
+            last = tb[-1]
+
+            logger.error(f"FILE  → {last.filename}")
+            logger.error(f"LINE  → {last.lineno}")
+            logger.error(f"CODE  → {last.line}")
+
+        logger.error(f"ERROR → {type(e).__name__}: {e}")
+
+        logger.debug(traceback.format_exc())
 
 logger.info("═" * 80)
 logger.info("SETTINGS TEST")
