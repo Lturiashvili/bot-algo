@@ -43,10 +43,9 @@ class Settings:
     # SECONDARY_TF -> TREND timeframe
     # CONFIRM_TF -> CONFIRMATION timeframe
 
-    PRIMARY_TF: str = os.getenv("PRIMARY_TF", "5m")     # ENTRY TF
-    SECONDARY_TF: str = os.getenv("SECONDARY_TF", "15m")  # TREND TF
-    CONFIRM_TF: str = os.getenv("CONFIRM_TF", "30m")     # CONFIRM TF
-
+    PRIMARY_TF: str = os.getenv("PRIMARY_TF", "5min")
+    SECONDARY_TF: str = os.getenv("SECONDARY_TF", "15min")
+    CONFIRM_TF: str = os.getenv("CONFIRM_TF", "30min")
 
     # =========================================
     # STRATEGY PARAMETERS
