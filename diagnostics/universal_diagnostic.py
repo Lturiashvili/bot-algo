@@ -124,7 +124,7 @@ logger.info("═" * 80)
 logger.info("SETTINGS TEST")
 
 try:
-    config = importlib.import_module("config")
+    config = importlib.import_module("execution.config")
     if hasattr(config, "Settings"):
         Settings = getattr(config, "Settings")
         s = Settings()
@@ -142,11 +142,10 @@ logger.info("═" * 80)
 logger.info("CORE CLASS TEST")
 
 CLASS_TESTS = [
-    ("portfolio", "Portfolio"),
-    ("risk.manager", "RiskManager"),
-    ("database", "TradeDB")
+    ("execution.portfolio", "Portfolio"),
+    ("execution.risk.manager", "RiskManager"),
+    ("execution.database", "TradeDB")
 ]
-
 for module_name, class_name in CLASS_TESTS:
     try:
         mod = importlib.import_module(module_name)
