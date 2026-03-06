@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from execution.portfolio import Position
 from datetime import datetime, timezone
 import os
 
@@ -221,6 +222,26 @@ class Engine:
                 symbol,
                 size_usdt
             )
+            
+            qty = getattr(order, "executed_qty", None)
+            price = getattr(order, "avg_price", None)
+
+            if qty and price:
+                position = Position(
+                    symbol=symbol,
+                    qty=float(qty),
+                    entry_price=float(price),
+                    entry_time=datetime.now(timezone.utc),
+                    atr_at_entry=0.0,
+                    stop_price=0.0,
+                    tp_price=0.0,
+                    best_price=float(price),
+                    trailing_enabled=False,
+                    trailing_stop=0.0,
+                    trade_id=0
+               )
+
+               self.portfolio.open(position, current_idx=0, cooldown_candles=1)
 
             log.info(
                 f"EXECUTION_DONE {symbol} "
