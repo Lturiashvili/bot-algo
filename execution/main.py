@@ -102,17 +102,22 @@ class Engine:
 
         try:
 
-            positions = await self.safe_rest(self.ex.fetch_positions)
+            if hasattr(self.ex, "fetch_positions"):
 
+            positions = await self.safe_rest(self.ex.fetch_positions)
+            
             for p in positions:
 
                 symbol = p["symbol"]
 
                 if float(p["size"]) > 0:
+                    
                     log.info(f"SYNC_POSITION {symbol}")
+                    
                     self.portfolio.register_position(symbol)
 
         except Exception as e:
+            
             log.warning(f"SYNC_FAILED {e}")
 
     # ---------------- HISTORY ----------------
