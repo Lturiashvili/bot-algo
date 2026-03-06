@@ -1,175 +1,28 @@
 from __future__ import annotations
-
 import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
 load_dotenv()
 
-
-def _get_bool(key: str, default: bool) -> bool:
-    v = os.getenv(key)
-    if v is None:
-        return default
-    return v.strip().lower() in ("1", "true", "yes", "y", "on")
-
-
 @dataclass(frozen=True)
 class Settings:
-
-    # =========================================
-    # EXCHANGE
-    # =========================================
-
-    EXCHANGE: str = os.getenv("EXCHANGE", "binance").strip().lower()  # binance | bybit
-    MODE: str = os.getenv("MODE", "LIVE").strip().upper()  # LIVE only (spot)
-
-
-    # =========================================
-    # SYMBOLS
-    # =========================================
-
-    SYMBOLS: list[str] = tuple(
-        s.strip().upper()
-        for s in os.getenv("SYMBOLS", "BTCUSDT,SOLUSDT").split(",")
-        if s.strip()
-    )  # type: ignore
-
-
-    # =========================================
-    # TIMEFRAMES
-    # =========================================
-    # PRIMARY_TF -> ENTRY timeframe
-    # SECONDARY_TF -> TREND timeframe
-    # CONFIRM_TF -> CONFIRMATION timeframe
-
-    PRIMARY_TF: str = os.getenv("PRIMARY_TF", "5min")
-    SECONDARY_TF: str = os.getenv("SECONDARY_TF", "15min")
-    CONFIRM_TF: str = os.getenv("CONFIRM_TF", "30min")
-
-    # =========================================
-    # STRATEGY PARAMETERS
-    # =========================================
-
-    EMA_FAST: int = int(os.getenv("EMA_FAST", "50"))
-    EMA_SLOW: int = int(os.getenv("EMA_SLOW", "200"))
-
-    RSI_PERIOD: int = int(os.getenv("RSI_PERIOD", "14"))
-    RSI_LONG_MIN: float = float(os.getenv("RSI_LONG_MIN", "55"))
-
-    ATR_PERIOD: int = int(os.getenv("ATR_PERIOD", "14"))
-
-
-    # =========================================
-    # RISK MANAGEMENT
-    # =========================================
-
-    POSITION_PCT: float = float(os.getenv("POSITION_PCT", "0.15"))
-
+    EXCHANGE: str = os.getenv("EXCHANGE", "binance").lower()
+    SYMBOLS: list[str] = [s.strip().upper() for s in os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
+    PRIMARY_TF: str = os.getenv("PRIMARY_TF", "15m")
+    POSITION_PCT: float = float(os.getenv("POSITION_PCT", "0.20"))
     STOP_ATR_MULT: float = float(os.getenv("STOP_ATR_MULT", "1.5"))
     TP_ATR_MULT: float = float(os.getenv("TP_ATR_MULT", "3.0"))
+    PARTIAL_TP_PCT: float = float(os.getenv("PARTIAL_TP_PCT", "0.50"))
+    SYMBOL_COOLDOWN_SECONDS: int = int(os.getenv("SYMBOL_COOLDOWN_SECONDS", "1800"))
+    MAX_TRADES_WINDOW_SECONDS: int = int(os.getenv("MAX_TRADES_WINDOW_SECONDS", "3600"))
+    MAX_TRADES_PER_WINDOW: int = int(os.getenv("MAX_TRADES_PER_WINDOW", "5"))
+    MAX_EXPOSURE_POSITIONS: int = int(os.getenv("MAX_EXPOSURE_POSITIONS", "4"))
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    DB_PATH: str = os.getenv("DB_PATH", "trades.db")
 
-    TRAILING_ENABLED: bool = _get_bool("TRAILING_ENABLED", True)
-
-    COOLDOWN_CANDLES: int = int(os.getenv("COOLDOWN_CANDLES", "3"))
-
-    MAX_POSITIONS_PER_SYMBOL: int = int(
-        os.getenv("MAX_POSITIONS_PER_SYMBOL", "1")
-    )
-
-
-    # =========================================
-    # FEES / SLIPPAGE
-    # =========================================
-
-    TAKER_FEE: float = float(os.getenv("TAKER_FEE", "0.001"))
-    MAKER_FEE: float = float(os.getenv("MAKER_FEE", "0.001"))
-
-    SLIPPAGE_BPS: float = float(os.getenv("SLIPPAGE_BPS", "5"))
-
-
-    # =========================================
-    # PARTIAL TAKE PROFIT
-    # =========================================
-
-    PARTIAL_TP_PCT: float = float(os.getenv("PARTIAL_TP_PCT", "0.5"))
-
-
-    # =========================================
-    # ML FILTER
-    # =========================================
-
-    ML_ENABLED: bool = _get_bool("ML_ENABLED", True)
-
-    ML_MIN_PROBA: float = float(os.getenv("ML_MIN_PROBA", "0.55"))
-
-
-    # =========================================
-    # DATABASE
-    # =========================================
-
-    DB_PATH: str = os.getenv("DB_PATH", "./trades_v3.db")
-
-
-    # =========================================
-    # BINANCE ENDPOINTS
-    # =========================================
-
-    BINANCE_BASE_URL: str = os.getenv(
-        "BINANCE_BASE_URL",
-        "https://api.binance.com"
-    )
-
-    BINANCE_WS_URL: str = os.getenv(
-        "BINANCE_WS_URL",
-        "wss://stream.binance.com:9443/ws"
-    )
-
-    BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
-    BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET", "")
-
-
-    # =========================================
-    # BYBIT ENDPOINTS
-    # =========================================
-
-    BYBIT_BASE_URL: str = os.getenv(
-        "BYBIT_BASE_URL",
-        "https://api.bybit.com"
-    )
-
-    BYBIT_WS_URL: str = os.getenv(
-        "BYBIT_WS_URL",
-        "wss://stream.bybit.com/v5/public/spot"
-    )
-
-    BYBIT_API_KEY: str = os.getenv("BYBIT_API_KEY", "")
-    BYBIT_API_SECRET: str = os.getenv("BYBIT_API_SECRET", "")
-
-
-    # =========================================
-    # RUNTIME
-    # =========================================
-
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
-
-    WS_RECONNECT_MAX_DELAY: float = float(
-        os.getenv("WS_RECONNECT_MAX_DELAY", "10")
-    )
-
-    REST_RATE_PER_SEC: float = float(
-        os.getenv("REST_RATE_PER_SEC", "8")
-    )
-
-    REST_BURST: float = float(
-        os.getenv("REST_BURST", "16")
-    )
-
-
-    # =========================================
-    # BACKTEST
-    # =========================================
-
-    BACKTEST_START_BALANCE: float = float(
-        os.getenv("BACKTEST_START_BALANCE", "10000")
-    )
+    # API გასაღებები (არ დაწეროთ კოდში!)
+    BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+    BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+    BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "")
+    BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
