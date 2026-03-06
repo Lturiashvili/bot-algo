@@ -10,7 +10,7 @@ print("All env vars count:", len(os.environ))
 print("Sample env var:", os.environ.get("RENDER", "no RENDER var"))
 
 for i in range(1, 21):
-    print(f"TEST LINE {i} — გამარჯობა ბიჭებო ზეზვა და ლაშა , მინდა გისურვოთ წარმატებები და ძალიან დიდი ფული ჩემი დახმარებით ძმებო !!! Render! {time.strftime('%H:%M:%S')}")
+    print(f"TEST LINE {i} — გამარჯობა ბიჭებო ზეზვა და ლაშა, მინდა გისურვოთ წარმატებები და ძალიან დიდი ფული ჩემი დახმარებით ძმებო!!! Render! {time.strftime('%H:%M:%S')}")
     sys.stdout.flush()  # იძულებითი flush, რომ დაუყოვნებლივ გამოჩნდეს
     time.sleep(1)
 
