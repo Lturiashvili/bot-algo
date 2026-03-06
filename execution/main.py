@@ -336,8 +336,8 @@ class Engine:
             log.warning(
                 f"CANDLE_OUT_OF_ORDER {symbol} ts={ts} last={last_ts}"
             )
-
             return
+            
 
     # -----------------------------------------
     # append new candle
