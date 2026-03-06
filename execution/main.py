@@ -57,7 +57,6 @@ class Engine:
 
         self._df: Dict[str, pd.DataFrame] = {}
         self._idx = {sym: 0 for sym in self.s.SYMBOLS}
-
         self._locks = {sym: asyncio.Lock() for sym in self.s.SYMBOLS}
 
         limiter = TokenBucket(rate_per_sec=s.REST_RATE_PER_SEC, burst=s.REST_BURST)
@@ -82,8 +81,6 @@ class Engine:
 
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
-    # ---------------- REST RETRY ----------------
-
     async def safe_rest(self, fn, *args, retries=3):
 
         for i in range(retries):
@@ -96,31 +93,27 @@ class Engine:
 
         raise RuntimeError("REST failed")
 
-    # ---------------- STARTUP SYNC ----------------
-
     async def sync_with_exchange(self):
 
         try:
 
             if hasattr(self.ex, "fetch_positions"):
 
-            positions = await self.safe_rest(self.ex.fetch_positions)
-            
-            for p in positions:
+                positions = await self.safe_rest(self.ex.fetch_positions)
 
-                symbol = p["symbol"]
+                for p in positions:
 
-                if float(p["size"]) > 0:
-                    
-                    log.info(f"SYNC_POSITION {symbol}")
-                    
-                    self.portfolio.register_position(symbol)
+                    symbol = p["symbol"]
+
+                    if float(p["size"]) > 0:
+
+                        log.info(f"SYNC_POSITION {symbol}")
+
+                        self.portfolio.register_position(symbol)
 
         except Exception as e:
-            
-            log.warning(f"SYNC_FAILED {e}")
 
-    # ---------------- HISTORY ----------------
+            log.warning(f"SYNC_FAILED {e}")
 
     async def seed_history(self, symbol):
 
@@ -147,8 +140,6 @@ class Engine:
 
         self._df[symbol] = df
 
-    # ---------------- POSITION SIZE ----------------
-
     async def compute_size(self):
 
         balance = await self.safe_rest(self.ex.fetch_usdt_balance)
@@ -159,8 +150,6 @@ class Engine:
             return None
 
         return size
-
-    # ---------------- EXIT DETECTION ----------------
 
     async def check_position_exit(self, symbol):
 
@@ -174,8 +163,6 @@ class Engine:
             log.info(f"POSITION_CLOSED {symbol}")
 
             self.portfolio.close_position(symbol)
-
-    # ---------------- SIGNAL ----------------
 
     def build_tf(self, df):
 
@@ -205,8 +192,6 @@ class Engine:
 
         return df2, df3, df4
 
-    # ---------------- EXECUTION ----------------
-
     async def execute_trade(self, symbol, signal):
 
         async with self._locks[symbol]:
@@ -230,15 +215,12 @@ class Engine:
             )
 
             if not order:
-
                 log.error("ORDER_FAILED")
                 return
 
             log.info(f"ORDER_OPENED {symbol}")
 
             self.portfolio.register_position(symbol)
-
-    # ---------------- STRATEGY ----------------
 
     async def maybe_open_position(self, symbol):
 
@@ -267,13 +249,14 @@ class Engine:
             return
 
         if self.s.ML_ENABLED:
+
             if not self.ml.allow(sig.features):
+
                 log.info("ML_BLOCK")
+
                 return
 
         await self.execute_trade(symbol, sig)
-
-    # ---------------- CANDLE UPDATE ----------------
 
     def update_candle(self, symbol, msg):
 
@@ -289,12 +272,10 @@ class Engine:
             "volume": msg.kline.volume,
         }
 
-        # duplicate candle protection
         if ts in df.index:
             df.loc[ts] = candle
             return
 
-        # out-of-order protection
         if len(df) > 0:
 
             last_ts = df.index[-1]
@@ -307,13 +288,9 @@ class Engine:
 
                 return
 
-        # append new candle
         df.loc[ts] = candle
 
-        # increment index only on new candle
         self._idx[symbol] += 1
-
-    # ---------------- ENGINE LOOP ----------------
 
     async def run(self):
 
