@@ -15,7 +15,7 @@ from execution.exchange.bybit_rest import BybitSpot
 from execution.exchange.binance_ws import BinanceWS
 from execution.exchange.bybit_ws import BybitWS
 
-from execution.portfolio import Portfolio, Position
+from execution.portfolio import Portfolio
 from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
 from execution.trade_manager import TradeManager
@@ -60,7 +60,6 @@ class Engine:
 
         self.router = SmartRouter()
 
-        # EXECUTION ENGINE
         self.trade_manager = TradeManager(self.router)
 
         self.override = EnvOverrideBridge()
@@ -155,16 +154,21 @@ class Engine:
 
             balance = await self.ex.get_balance("USDT")
 
+            if balance <= 0:
+                log.warning("NO_BALANCE")
+                return
+
             price = float(df15["close"].iloc[-1])
 
             # ==============================
-            # POSITION SIZE (RiskManager)
+            # POSITION SIZE
             # ==============================
 
-            size_usdt = self.risk.calculate_position_size(
-                balance,
-                price
-            )
+            size_usdt = self.risk.order_notional_usdt(balance)
+
+            if size_usdt < 5:
+                log.warning(f"POSITION_TOO_SMALL {size_usdt}")
+                return
 
             log.info(
                 f"POSITION_SIZE {symbol} "
@@ -173,7 +177,7 @@ class Engine:
             )
 
             # ==============================
-            # EXECUTION (TradeManager)
+            # EXECUTION
             # ==============================
 
             success = await self.trade_manager.open_long(
@@ -192,10 +196,6 @@ class Engine:
 
                 return
 
-            # ==============================
-            # VERIFY POSITION
-            # ==============================
-
             pos = self.portfolio.positions.get(symbol)
 
             if not pos:
@@ -207,8 +207,11 @@ class Engine:
                 return
 
             # ==============================
-            # OCO RETRY (race condition fix)
+            # OCO RETRY
             # ==============================
+
+            tp_pct = 0.02
+            sl_pct = 0.01
 
             for attempt in range(3):
 
@@ -217,8 +220,8 @@ class Engine:
                     symbol,
                     pos.qty,
                     pos.entry_price,
-                    self.s.TP_PCT,
-                    self.s.SL_PCT
+                    tp_pct,
+                    sl_pct
                 )
 
                 if ok:
