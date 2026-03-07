@@ -38,9 +38,7 @@ class Engine:
     def __init__(self, s: Settings):
 
         self.s = s
-
         self.db = TradeDB(s.DB_PATH)
-
         self.portfolio = Portfolio()
 
         self.risk = RiskManager(
@@ -59,7 +57,6 @@ class Engine:
         )
 
         self.router = SmartRouter()
-
         self.trade_manager = TradeManager(self.router)
 
         self.override = EnvOverrideBridge()
@@ -91,6 +88,10 @@ class Engine:
 
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
+    # =========================================================
+    # HISTORY SEED
+    # =========================================================
+
     async def seed_history(self, symbol: str):
 
         candles = await self.ex.fetch_ohlcv(
@@ -112,6 +113,57 @@ class Engine:
         ]).set_index("ts")
 
         self._df15[symbol] = df
+
+    # =========================================================
+    # SELL ENGINE
+    # =========================================================
+
+    async def monitor_positions(self, symbol: str):
+
+        pos = self.portfolio.get(symbol)
+
+        if not pos:
+            return
+
+        df = self._df15[symbol]
+
+        price = float(df["close"].iloc[-1])
+
+        # TP HIT
+        if pos.tp_price and price >= pos.tp_price:
+
+            log.info(
+                "TP_HIT",
+                extra={"symbol": symbol, "price": price}
+            )
+
+            await self.trade_manager.close_position(
+                self.ex,
+                self.portfolio,
+                symbol
+            )
+
+            return
+
+        # SL HIT
+        if pos.stop_price and price <= pos.stop_price:
+
+            log.warning(
+                "SL_HIT",
+                extra={"symbol": symbol, "price": price}
+            )
+
+            await self.trade_manager.close_position(
+                self.ex,
+                self.portfolio,
+                symbol
+            )
+
+            return
+
+    # =========================================================
+    # BUY ENGINE
+    # =========================================================
 
     async def maybe_open_position(self, symbol: str, idx: int):
 
@@ -160,25 +212,11 @@ class Engine:
 
             price = float(df15["close"].iloc[-1])
 
-            # ==============================
-            # POSITION SIZE
-            # ==============================
-
             size_usdt = self.risk.order_notional_usdt(balance)
 
             if size_usdt < 5:
                 log.warning(f"POSITION_TOO_SMALL {size_usdt}")
                 return
-
-            log.info(
-                f"POSITION_SIZE {symbol} "
-                f"balance={balance} "
-                f"size={size_usdt}"
-            )
-
-            # ==============================
-            # EXECUTION
-            # ==============================
 
             success = await self.trade_manager.open_long(
                 self.ex,
@@ -189,68 +227,17 @@ class Engine:
             )
 
             if not success:
-
-                log.warning(
-                    f"BUY_EXECUTION_FAILED {symbol}"
-                )
-
                 return
-
-            pos = self.portfolio.positions.get(symbol)
-
-            if not pos:
-
-                log.error(
-                    f"PORTFOLIO_UPDATE_FAILED {symbol}"
-                )
-
-                return
-
-            # ==============================
-            # OCO RETRY
-            # ==============================
-
-            tp_pct = 0.02
-            sl_pct = 0.01
-
-            for attempt in range(3):
-
-                ok = await self.trade_manager.place_safe_oco(
-                    self.ex,
-                    symbol,
-                    pos.qty,
-                    pos.entry_price,
-                    tp_pct,
-                    sl_pct
-                )
-
-                if ok:
-
-                    log.info(
-                        f"OCO_PLACED {symbol} attempt={attempt+1}"
-                    )
-
-                    break
-
-                await asyncio.sleep(0.7)
-
-            else:
-
-                log.error(
-                    f"OCO_FAILED_AFTER_RETRIES {symbol}"
-                )
-
-            log.info(
-                f"EXECUTION_DONE {symbol} "
-                f"qty={pos.qty} "
-                f"entry={pos.entry_price}"
-            )
 
         except Exception as e:
 
             log.exception(
                 f"EXECUTION_ERROR {symbol} err={e}"
             )
+
+    # =========================================================
+    # LIVE LOOP
+    # =========================================================
 
     async def run_live(self):
 
@@ -270,7 +257,21 @@ class Engine:
             if msg.symbol not in self._df15:
                 continue
 
-            idx = len(self._df15[msg.symbol])
+            df = self._df15[msg.symbol]
+
+            new_row = {
+                "open": msg.open,
+                "high": msg.high,
+                "low": msg.low,
+                "close": msg.close,
+                "volume": msg.volume
+            }
+
+            df.loc[_ms_to_dt(msg.ts)] = new_row
+
+            idx = len(df)
+
+            await self.monitor_positions(msg.symbol)
 
             await self.maybe_open_position(
                 msg.symbol,
