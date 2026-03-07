@@ -29,6 +29,9 @@ logging.basicConfig(level=Settings().LOG_LEVEL)
 log = logging.getLogger("main")
 
 
+MAX_CANDLES = 2000
+
+
 def _ms_to_dt(ms: int):
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
 
@@ -115,7 +118,7 @@ class Engine:
         self._df15[symbol] = df
 
     # =========================================================
-    # SELL ENGINE
+    # POSITION MONITOR
     # =========================================================
 
     async def monitor_positions(self, symbol: str):
@@ -129,34 +132,32 @@ class Engine:
 
         price = float(df["close"].iloc[-1])
 
-        # TP HIT
         if pos.tp_price and price >= pos.tp_price:
 
-            log.info(
-                "TP_HIT",
-                extra={"symbol": symbol, "price": price}
-            )
+            log.info("TP_HIT", extra={"symbol": symbol, "price": price})
 
-            await self.trade_manager.close_position(
-                self.ex,
-                self.portfolio,
-                symbol
+            await asyncio.wait_for(
+                self.trade_manager.close_position(
+                    self.ex,
+                    self.portfolio,
+                    symbol
+                ),
+                timeout=10
             )
 
             return
 
-        # SL HIT
         if pos.stop_price and price <= pos.stop_price:
 
-            log.warning(
-                "SL_HIT",
-                extra={"symbol": symbol, "price": price}
-            )
+            log.warning("SL_HIT", extra={"symbol": symbol, "price": price})
 
-            await self.trade_manager.close_position(
-                self.ex,
-                self.portfolio,
-                symbol
+            await asyncio.wait_for(
+                self.trade_manager.close_position(
+                    self.ex,
+                    self.portfolio,
+                    symbol
+                ),
+                timeout=10
             )
 
             return
@@ -200,14 +201,14 @@ class Engine:
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
             return
 
-        log.info(f"BUY_SIGNAL_CONFIRMED {symbol}")
-
         try:
 
-            balance = await self.ex.get_balance("USDT")
+            balance = await asyncio.wait_for(
+                self.ex.get_balance("USDT"),
+                timeout=5
+            )
 
             if balance <= 0:
-                log.warning("NO_BALANCE")
                 return
 
             price = float(df15["close"].iloc[-1])
@@ -215,25 +216,26 @@ class Engine:
             size_usdt = self.risk.order_notional_usdt(balance)
 
             if size_usdt < 5:
-                log.warning(f"POSITION_TOO_SMALL {size_usdt}")
                 return
 
-            success = await self.trade_manager.open_long(
-                self.ex,
-                self.portfolio,
-                symbol,
-                size_usdt,
-                price
+            await asyncio.wait_for(
+                self.trade_manager.open_long(
+                    self.ex,
+                    self.portfolio,
+                    symbol,
+                    size_usdt,
+                    price
+                ),
+                timeout=10
             )
 
-            if not success:
-                return
+        except asyncio.TimeoutError:
+
+            log.warning("EXECUTION_TIMEOUT", extra={"symbol": symbol})
 
         except Exception as e:
 
-            log.exception(
-                f"EXECUTION_ERROR {symbol} err={e}"
-            )
+            log.exception(f"EXECUTION_ERROR {symbol} err={e}")
 
     # =========================================================
     # LIVE LOOP
@@ -246,37 +248,53 @@ class Engine:
         for sym in self.s.SYMBOLS:
             await self.seed_history(sym)
 
-        async for msg in self.ws.stream_klines(
-            list(self.s.SYMBOLS),
-            self.s.PRIMARY_TF
-        ):
+        while True:
 
-            if not msg.is_closed:
-                continue
+            try:
 
-            if msg.symbol not in self._df15:
-                continue
+                async for msg in self.ws.stream_klines(
+                    list(self.s.SYMBOLS),
+                    self.s.PRIMARY_TF
+                ):
 
-            df = self._df15[msg.symbol]
+                    if not msg.is_closed:
+                        continue
 
-            new_row = {
-                "open": msg.open,
-                "high": msg.high,
-                "low": msg.low,
-                "close": msg.close,
-                "volume": msg.volume
-            }
+                    if msg.symbol not in self._df15:
+                        continue
 
-            df.loc[_ms_to_dt(msg.ts)] = new_row
+                    df = self._df15[msg.symbol]
 
-            idx = len(df)
+                    new_row = {
+                        "open": msg.open,
+                        "high": msg.high,
+                        "low": msg.low,
+                        "close": msg.close,
+                        "volume": msg.volume
+                    }
 
-            await self.monitor_positions(msg.symbol)
+                    df.loc[_ms_to_dt(msg.ts)] = new_row
 
-            await self.maybe_open_position(
-                msg.symbol,
-                idx
-            )
+                    if len(df) > MAX_CANDLES:
+                        self._df15[msg.symbol] = df.iloc[-MAX_CANDLES:]
+
+                    idx = len(df)
+
+                    await self.monitor_positions(msg.symbol)
+
+                    await self.maybe_open_position(
+                        msg.symbol,
+                        idx
+                    )
+
+            except Exception as e:
+
+                log.error(
+                    "MAIN_LOOP_EXCEPTION",
+                    extra={"err": str(e)}
+                )
+
+                await asyncio.sleep(2)
 
 
 async def main():
