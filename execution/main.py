@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
+import os
 
 import pandas as pd
 
@@ -14,31 +14,30 @@ from execution.exchange.binance_rest import BinanceSpot
 from execution.exchange.bybit_rest import BybitSpot
 from execution.exchange.binance_ws import BinanceWS
 from execution.exchange.bybit_ws import BybitWS
-
+from execution.ml.signal_model import MLSignalFilter
 from execution.portfolio import Portfolio
 from execution.risk.manager import RiskManager
 from execution.smart_router import SmartRouter
-from execution.trade_manager import TradeManager
-
-from execution.ml.signal_model import MLSignalFilter
+from execution.execution_brain import ExecutionBrain
+from execution.position_manager import PositionManager
 from execution.strategy.orderbook_alpha import compute_long_signal
 from ui.env_override import EnvOverrideBridge
 
+logging.basicConfig(
+    level=Settings().LOG_LEVEL,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 
-logging.basicConfig(level=Settings().LOG_LEVEL)
 log = logging.getLogger("main")
 
 
-MAX_CANDLES = 2000
-
-
-def _ms_to_dt(ms: int):
+def _ms_to_dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
 
 
 class Engine:
 
-    def __init__(self, s: Settings):
+    def __init__(self, s: Settings) -> None:
 
         self.s = s
         self.db = TradeDB(s.DB_PATH)
@@ -54,22 +53,24 @@ class Engine:
             partial_tp_pct=s.PARTIAL_TP_PCT,
         )
 
-        self.ml = MLSignalFilter(
-            enabled=s.ML_ENABLED,
-            min_proba=s.ML_MIN_PROBA
-        )
-
+        self.ml = MLSignalFilter(enabled=s.ML_ENABLED, min_proba=s.ML_MIN_PROBA)
         self.router = SmartRouter()
-        self.trade_manager = TradeManager(self.router)
-
         self.override = EnvOverrideBridge()
 
+        self.execution_brain = ExecutionBrain(s, self.portfolio)
+
+        self.position_manager = PositionManager(
+            tp_pct=0.002,
+            sl_pct=0.01,
+            max_bars=30,
+        )
+
+        self._idx: dict[str, int] = {sym: 0 for sym in s.SYMBOLS}
         self._df15: dict[str, pd.DataFrame] = {}
 
-        limiter = TokenBucket(
-            rate_per_sec=s.REST_RATE_PER_SEC,
-            burst=s.REST_BURST
-        )
+        self._execution_lock: set[str] = set()
+
+        limiter = TokenBucket(rate_per_sec=s.REST_RATE_PER_SEC, burst=s.REST_BURST)
 
         if s.EXCHANGE == "binance":
 
@@ -77,7 +78,7 @@ class Engine:
                 s.BINANCE_BASE_URL,
                 s.BINANCE_API_KEY,
                 s.BINANCE_API_SECRET,
-                limiter
+                limiter,
             )
 
             self.ws = BinanceWS(s.BINANCE_WS_URL)
@@ -86,87 +87,67 @@ class Engine:
 
             self.ex = BybitSpot(
                 s.BYBIT_API_KEY,
-                s.BYBIT_API_SECRET
+                s.BYBIT_API_SECRET,
             )
 
             self.ws = BybitWS(s.BYBIT_WS_URL)
 
-    # =========================================================
-    # HISTORY SEED
-    # =========================================================
+    async def seed_history(self, symbol: str) -> None:
 
-    async def seed_history(self, symbol: str):
+        log.info(f"FETCH_OHLCV_START {symbol}")
 
-        candles = await self.ex.fetch_ohlcv(
-            symbol,
-            self.s.PRIMARY_TF,
-            limit=600
+        candles = await asyncio.wait_for(
+            self.ex.fetch_ohlcv(symbol, self.s.PRIMARY_TF, limit=600),
+            timeout=15,
         )
 
-        df = pd.DataFrame([
-            {
-                "ts": _ms_to_dt(c["ts"]),
-                "open": c["open"],
-                "high": c["high"],
-                "low": c["low"],
-                "close": c["close"],
-                "volume": c["volume"],
-            }
-            for c in candles
-        ]).set_index("ts")
+        log.info(f"FETCH_OHLCV_DONE {symbol}")
+
+        df = pd.DataFrame(
+            [
+                {
+                    "ts": _ms_to_dt(c["ts"]),
+                    "open": c["open"],
+                    "high": c["high"],
+                    "low": c["low"],
+                    "close": c["close"],
+                    "volume": c["volume"],
+                }
+                for c in candles
+            ]
+        ).set_index("ts")
 
         self._df15[symbol] = df
 
-    # =========================================================
-    # POSITION MONITOR
-    # =========================================================
+    async def sync_positions(self):
 
-    async def monitor_positions(self, symbol: str):
+        try:
 
-        pos = self.portfolio.get(symbol)
+            balances = await self.ex.fetch_balances()
 
-        if not pos:
+            for asset, amount in balances.items():
+
+                if amount <= 0:
+                    continue
+
+                symbol = f"{asset}USDT"
+
+                if symbol in self.s.SYMBOLS:
+
+                    self.portfolio.sync_position(
+                        symbol=symbol,
+                        qty=amount,
+                        entry_price=None
+                    )
+
+        except Exception as e:
+
+            log.warning(f"POSITION_SYNC_FAILED {e}")
+
+    async def maybe_open_position(self, symbol: str, idx: int) -> None:
+
+        if symbol in self._execution_lock:
             return
-
-        df = self._df15[symbol]
-
-        price = float(df["close"].iloc[-1])
-
-        if pos.tp_price and price >= pos.tp_price:
-
-            log.info("TP_HIT", extra={"symbol": symbol, "price": price})
-
-            await asyncio.wait_for(
-                self.trade_manager.close_position(
-                    self.ex,
-                    self.portfolio,
-                    symbol
-                ),
-                timeout=10
-            )
-
-            return
-
-        if pos.stop_price and price <= pos.stop_price:
-
-            log.warning("SL_HIT", extra={"symbol": symbol, "price": price})
-
-            await asyncio.wait_for(
-                self.trade_manager.close_position(
-                    self.ex,
-                    self.portfolio,
-                    symbol
-                ),
-                timeout=10
-            )
-
-            return
-
-    # =========================================================
-    # BUY ENGINE
-    # =========================================================
-
-    async def maybe_open_position(self, symbol: str, idx: int):
 
         if self.portfolio.has_position(symbol):
             return
@@ -176,9 +157,7 @@ class Engine:
 
         df15 = self._df15[symbol]
 
-        min_bars = max(self.s.EMA_SLOW + 5, 50)
-
-        if len(df15) < min_bars:
+        if len(df15) < 50:
             return
 
         sig = compute_long_signal(
@@ -192,58 +171,124 @@ class Engine:
             self.s.ATR_PERIOD,
         )
 
-        if sig is None:
-            return
-
-        if sig.action != "BUY":
+        if sig is None or sig.action != "BUY":
             return
 
         if self.s.ML_ENABLED and not self.ml.allow(sig.features):
             return
 
+        open_positions = self.portfolio.count_open_positions()
+
+        if open_positions >= 5:
+            log.info("MAX_POSITIONS_GUARD")
+            return
+
+        capital = await self.ex.fetch_usdt_balance()
+
+        if capital < 3:
+            log.warning("INSUFFICIENT_CAPITAL")
+            return
+
+        max_positions = 5
+        remaining_slots = max_positions - open_positions
+
+        if remaining_slots <= 0:
+            return
+
+        position_size = capital / remaining_slots
+
+        self._execution_lock.add(symbol)
+
         try:
 
-            balance = await asyncio.wait_for(
-                self.ex.get_balance("USDT"),
-                timeout=5
+            log.info(f"EXECUTION_START {symbol} size={position_size}")
+
+            order = await self.router.open_long(
+                self.ex,
+                symbol,
+                position_size
             )
 
-            if balance <= 0:
+            if not order:
+                log.warning("ORDER_FAILED")
                 return
 
-            price = float(df15["close"].iloc[-1])
+            qty = getattr(order, "executed_qty", None)
+            price = getattr(order, "avg_price", None)
 
-            size_usdt = self.risk.order_notional_usdt(balance)
-
-            if size_usdt < 5:
+            if not qty or not price:
+                log.warning("INVALID_ORDER_RESPONSE")
                 return
 
-            await asyncio.wait_for(
-                self.trade_manager.open_long(
-                    self.ex,
-                    self.portfolio,
-                    symbol,
-                    size_usdt,
-                    price
-                ),
-                timeout=10
+            log.info(f"BUY_EXECUTED {symbol} qty={qty} price={price}")
+
+            self.portfolio.open_position(
+                symbol=symbol,
+                qty=qty,
+                entry_price=price,
+                entry_idx=idx,
             )
 
-        except asyncio.TimeoutError:
+            # ===============================
+            # OCO SAFETY LAYER
+            # ===============================
 
-            log.warning("EXECUTION_TIMEOUT", extra={"symbol": symbol})
+            oco_ok = False
+
+            for attempt in range(3):
+
+                try:
+
+                    await self.router.place_oco_tp_sl(
+                        self.ex,
+                        symbol,
+                        qty,
+                        price
+                    )
+
+                    await asyncio.sleep(1)
+
+                    if await self.router.verify_oco(self.ex, symbol):
+
+                        oco_ok = True
+                        log.info(f"OCO_VERIFIED {symbol}")
+                        break
+
+                except Exception as e:
+
+                    log.warning(f"OCO_ATTEMPT_{attempt} failed {e}")
+
+            if not oco_ok:
+
+                log.critical(f"OCO_FAILED_PROTECTION {symbol}")
+
+                try:
+
+                    await self.router.close_position(
+                        self.ex,
+                        symbol,
+                        qty
+                    )
+
+                    log.critical(f"EMERGENCY_CLOSE_EXECUTED {symbol}")
+
+                except Exception as e:
+
+                    log.critical(f"FAILED_EMERGENCY_CLOSE {e}")
 
         except Exception as e:
 
-            log.exception(f"EXECUTION_ERROR {symbol} err={e}")
+            log.exception(f"EXECUTION_FAILED {symbol} {e}")
 
-    # =========================================================
-    # LIVE LOOP
-    # =========================================================
+        finally:
 
-    async def run_live(self):
+            self._execution_lock.discard(symbol)
+
+    async def run_live(self) -> None:
 
         await self.db.init()
+
+        await self.sync_positions()
 
         for sym in self.s.SYMBOLS:
             await self.seed_history(sym)
@@ -265,48 +310,72 @@ class Engine:
 
                     df = self._df15[msg.symbol]
 
-                    new_row = {
-                        "open": msg.open,
-                        "high": msg.high,
-                        "low": msg.low,
-                        "close": msg.close,
-                        "volume": msg.volume
+                    df.loc[_ms_to_dt(msg.ts)] = {
+                        "open": msg.kline.open,
+                        "high": msg.kline.high,
+                        "low": msg.kline.low,
+                        "close": msg.kline.close,
+                        "volume": msg.kline.volume,
                     }
 
-                    df.loc[_ms_to_dt(msg.ts)] = new_row
+                    if len(df) > 1000:
+                        df = df.tail(1000)
 
-                    if len(df) > MAX_CANDLES:
-                        self._df15[msg.symbol] = df.iloc[-MAX_CANDLES:]
+                    self._df15[msg.symbol] = df
 
-                    idx = len(df)
+                    self._idx[msg.symbol] += 1
 
-                    await self.monitor_positions(msg.symbol)
+                    override = self.override.read_override()
 
-                    await self.maybe_open_position(
+                    if override.enabled and override.kill_switch:
+                        log.warning("GLOBAL KILL SWITCH ACTIVE")
+                        continue
+
+                    await self.maybe_open_position(msg.symbol, self._idx[msg.symbol])
+
+                    price = msg.kline.close
+
+                    await self.position_manager.maybe_close_position(
+                        self.router,
+                        self.ex,
+                        self.portfolio,
                         msg.symbol,
-                        idx
+                        price,
+                        self._idx[msg.symbol],
                     )
 
             except Exception as e:
 
-                log.error(
-                    "MAIN_LOOP_EXCEPTION",
-                    extra={"err": str(e)}
-                )
+                log.error(f"WS_STREAM_CRASH {e}")
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(5)
 
 
-async def main():
+async def main() -> None:
 
     s = Settings()
-
     engine = Engine(s)
 
-    if (os.getenv("RUN_BACKTEST") or "").strip() == "1":
-        return
+    try:
 
-    await engine.run_live()
+        if (os.getenv("RUN_BACKTEST") or "").strip() == "1":
+            return
+
+        await engine.run_live()
+
+    finally:
+
+        try:
+            if engine.ws and hasattr(engine.ws, "close"):
+                await engine.ws.close()
+        except Exception:
+            pass
+
+        try:
+            if engine.ex and hasattr(engine.ex, "close"):
+                await engine.ex.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
