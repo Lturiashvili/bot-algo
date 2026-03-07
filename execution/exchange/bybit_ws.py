@@ -4,10 +4,9 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Dict
 
 import websockets
-
 
 log = logging.getLogger("bybit_ws")
 
@@ -27,95 +26,202 @@ class KlineMsg:
 
 
 class BybitWS:
+
     def __init__(self, ws_url: str) -> None:
+
         self.ws_url = ws_url
         self._stop = asyncio.Event()
+
+        # last candle guard (duplicate protection)
+        self._last_candle: Dict[str, int] = {}
 
     def stop(self) -> None:
         self._stop.set()
 
-    async def stream_klines(self, symbols: list[str], timeframe: str) -> AsyncIterator[KlineMsg]:
+    # =========================================================
+    # MAIN STREAM
+    # =========================================================
+
+    async def stream_klines(
+        self,
+        symbols: list[str],
+        timeframe: str
+    ) -> AsyncIterator[KlineMsg]:
+
+        # timeframe normalization
         if timeframe.endswith("m"):
             interval = timeframe[:-1]
+
         elif timeframe.endswith("h"):
             interval = str(int(timeframe[:-1]) * 60)
+
         else:
             raise ValueError("Unsupported timeframe")
 
         topics = [f"kline.{interval}.{s}" for s in symbols]
-        sub = {"op": "subscribe", "args": topics}
 
-        log.info(f"BYBIT_WS_INIT url={self.ws_url} topics={topics}")
+        subscribe_msg = {
+            "op": "subscribe",
+            "args": topics
+        }
 
-        backoff = 0.5
+        log.info(
+            "BYBIT_WS_INIT",
+            extra={
+                "url": self.ws_url,
+                "topics": topics
+            }
+        )
+
+        backoff = 1.0
+
         while not self._stop.is_set():
+
             try:
+
                 log.info("BYBIT_WS_CONNECTING")
+
                 async with websockets.connect(
                     self.ws_url,
-                    ping_interval=20,
-                    ping_timeout=20,
+                    ping_interval=15,
+                    ping_timeout=15,
+                    close_timeout=5,
+                    max_size=10_000_000,
                 ) as ws:
 
                     log.info("BYBIT_WS_CONNECTED")
 
-                    await ws.send(json.dumps(sub))
-                    log.info("BYBIT_WS_SUB_SENT")
+                    # subscribe
+                    await ws.send(json.dumps(subscribe_msg))
+                    log.info("BYBIT_WS_SUBSCRIBE_SENT")
 
+                    # confirm subscription
                     try:
-                        first_msg = await asyncio.wait_for(ws.recv(), timeout=10)
-                        first_data = json.loads(first_msg)
-                        log.info(f"BYBIT_WS_FIRST_MSG {first_data}")
-                    except asyncio.TimeoutError:
-                        log.warning("BYBIT_WS_NO_SUB_CONFIRM_WITHIN_10S")
 
-                    backoff = 0.5
+                        first = await asyncio.wait_for(ws.recv(), timeout=10)
+
+                        log.info(
+                            "BYBIT_WS_FIRST_MESSAGE",
+                            extra={"payload": first}
+                        )
+
+                    except asyncio.TimeoutError:
+
+                        log.warning("BYBIT_WS_SUB_CONFIRM_TIMEOUT")
+
+                    backoff = 1.0
 
                     async for raw in ws:
+
                         if self._stop.is_set():
                             break
 
+                        # -------------------------
+                        # SAFE JSON PARSE
+                        # -------------------------
+
                         try:
                             data = json.loads(raw)
+
                         except Exception:
-                            log.warning("BYBIT_WS_BAD_JSON")
+
+                            log.warning(
+                                "BYBIT_WS_JSON_ERROR",
+                                extra={"raw": raw[:200]}
+                            )
                             continue
 
-                        if "success" in data and data.get("success") is False:
-                            log.error(f"BYBIT_WS_SUBSCRIBE_ERROR {data}")
+                        # -------------------------
+                        # SUBSCRIBE ERRORS
+                        # -------------------------
+
+                        if "success" in data and not data.get("success", True):
+
+                            log.error(
+                                "BYBIT_WS_SUBSCRIBE_ERROR",
+                                extra={"data": data}
+                            )
                             continue
 
                         topic = data.get("topic")
-                        if not topic or not str(topic).startswith("kline."):
+
+                        if not topic:
                             continue
 
-                        items = data.get("data")
-                        if not items or not isinstance(items, list):
+                        if not topic.startswith("kline."):
                             continue
 
-                        item = items[-1]
-                        parts = str(topic).split(".")
+                        payload = data.get("data")
+
+                        if not payload:
+                            continue
+
+                        if not isinstance(payload, list):
+                            continue
+
+                        item = payload[-1]
+
+                        parts = topic.split(".")
+
                         if len(parts) < 3:
                             continue
 
-                        sym = parts[2]
+                        symbol = parts[2]
 
-                        yield KlineMsg(
-                            symbol=sym,
-                            timeframe=timeframe,
-                            is_closed=bool(item.get("confirm", False)),
-                            o=float(item.get("open")),
-                            h=float(item.get("high")),
-                            l=float(item.get("low")),
-                            c=float(item.get("close")),
-                            v=float(item.get("volume")),
-                            start_ms=int(item.get("start")),
-                            end_ms=int(item.get("end")),
-                        )
+                        try:
 
-            except (asyncio.CancelledError, KeyboardInterrupt):
+                            start = int(item.get("start"))
+
+                            # duplicate candle guard
+                            last = self._last_candle.get(symbol)
+
+                            if last == start:
+                                continue
+
+                            self._last_candle[symbol] = start
+
+                            msg = KlineMsg(
+                                symbol=symbol,
+                                timeframe=timeframe,
+                                is_closed=bool(item.get("confirm", False)),
+                                o=float(item.get("open")),
+                                h=float(item.get("high")),
+                                l=float(item.get("low")),
+                                c=float(item.get("close")),
+                                v=float(item.get("volume")),
+                                start_ms=start,
+                                end_ms=int(item.get("end")),
+                            )
+
+                        except Exception as e:
+
+                            log.warning(
+                                "BYBIT_WS_PARSE_ERROR",
+                                extra={
+                                    "symbol": symbol,
+                                    "err": str(e)
+                                }
+                            )
+
+                            continue
+
+                        yield msg
+
+            except asyncio.CancelledError:
                 raise
+
             except Exception as e:
-                log.error(f"BYBIT_WS_EXCEPTION {e}")
+
+                log.error(
+                    "BYBIT_WS_CONNECTION_ERROR",
+                    extra={"err": str(e)}
+                )
+
                 await asyncio.sleep(backoff)
-                backoff = min(10.0, backoff * 2)
+
+                backoff = min(30.0, backoff * 2)
+
+                log.warning(
+                    "BYBIT_WS_RECONNECTING",
+                    extra={"backoff": backoff}
+                )
