@@ -17,7 +17,7 @@ class TradeManager:
         self.router = router
 
     # =========================================================
-    # BUY EXECUTION (OPEN LONG)
+    # BUY EXECUTION
     # =========================================================
 
     async def open_long(
@@ -42,49 +42,65 @@ class TradeManager:
 
         try:
 
-            # ============================
-            # OPEN ORDER
-            # ============================
-
             order = await self.router.open_long(
                 ex,
                 symbol,
                 size_usdt
             )
 
-            qty = getattr(order, "executed_qty", None)
-            fill_price = getattr(order, "avg_price", None)
-
-            if not qty or not fill_price:
+            if not order:
 
                 log.error(
-                    "ORDER_FILL_FAILED",
+                    "ORDER_FAILED",
                     extra={"symbol": symbol}
                 )
 
                 return False
 
-            # ============================
-            # CREATE POSITION OBJECT
-            # ============================
+            # =================================
+            # FIX ORDER PARSING
+            # =================================
+
+            try:
+
+                qty = float(order.get("qty", 0))
+                fill_price = float(order.get("avg_price", 0))
+
+            except Exception:
+
+                log.error(
+                    "ORDER_PARSE_FAILED",
+                    extra={"symbol": symbol, "order": order}
+                )
+
+                return False
+
+            if qty <= 0 or fill_price <= 0:
+
+                log.error(
+                    "ORDER_FILL_INVALID",
+                    extra={"symbol": symbol}
+                )
+
+                return False
+
+            # =================================
+            # CREATE POSITION
+            # =================================
 
             position = Position(
                 symbol=symbol,
-                qty=float(qty),
-                entry_price=float(fill_price),
+                qty=qty,
+                entry_price=fill_price,
                 entry_time=datetime.now(timezone.utc),
                 atr_at_entry=0.0,
                 stop_price=0.0,
                 tp_price=0.0,
-                best_price=float(fill_price),
+                best_price=fill_price,
                 trailing_enabled=False,
                 trailing_stop=0.0,
                 trade_id=0
             )
-
-            # ============================
-            # UPDATE PORTFOLIO
-            # ============================
 
             portfolio.open(
                 position,
@@ -101,15 +117,15 @@ class TradeManager:
                 }
             )
 
-            # ============================
+            # =================================
             # PLACE TP / SL
-            # ============================
+            # =================================
 
             ok = await self.place_safe_oco(
                 ex,
                 symbol,
-                float(qty),
-                float(fill_price),
+                qty,
+                fill_price,
                 tp_pct,
                 sl_pct
             )
@@ -154,6 +170,7 @@ class TradeManager:
         tp_price = entry_price * (1 + tp_pct)
 
         try:
+
             return await self.router.place_partial_tp_limit(
                 ex,
                 symbol,
@@ -171,7 +188,7 @@ class TradeManager:
             return None
 
     # =========================================================
-    # SAFE OCO PLACEMENT
+    # SAFE OCO
     # =========================================================
 
     async def place_safe_oco(
@@ -251,7 +268,7 @@ class TradeManager:
             )
 
     # =========================================================
-    # CLOSE POSITION SAFELY
+    # CLOSE POSITION
     # =========================================================
 
     async def close_position(
@@ -275,16 +292,16 @@ class TradeManager:
 
             await self.cancel_all_orders(ex, symbol)
 
-            await self.router.close_long(
+            await self.router.close_long_market(
                 ex,
                 symbol,
                 qty
             )
 
-            portfolio.close_position(symbol)
+            portfolio.close(symbol)
 
             log.info(
-                "position_closed",
+                "POSITION_CLOSED",
                 extra={"symbol": symbol, "qty": qty}
             )
 
@@ -316,13 +333,13 @@ class TradeManager:
 
         try:
 
-            await self.router.close_position(
+            await self.router.close_long_market(
                 ex,
                 symbol,
                 pos.qty
             )
 
-            portfolio.close_position(symbol)
+            portfolio.close(symbol)
 
             log.critical(
                 "EMERGENCY_POSITION_CLOSE",
