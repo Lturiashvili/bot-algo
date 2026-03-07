@@ -261,7 +261,9 @@ class Engine:
                         continue
 
                     if msg.symbol not in self._df15:
-                        continue
+                           self._df15[msg.symbol] = pd.DataFrame(
+                               columns=["open","high","low","close","volume"]
+                           )
 
                     df = self._df15[msg.symbol]
 
