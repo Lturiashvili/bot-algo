@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 from datetime import datetime, timezone
@@ -14,7 +15,22 @@ log = logging.getLogger("trade_manager")
 class TradeManager:
 
     def __init__(self, router: SmartRouter):
+
         self.router = router
+
+        # execution lock per symbol
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    # =========================================================
+    # GET LOCK
+    # =========================================================
+
+    def _get_lock(self, symbol: str) -> asyncio.Lock:
+
+        if symbol not in self._locks:
+            self._locks[symbol] = asyncio.Lock()
+
+        return self._locks[symbol]
 
     # =========================================================
     # BUY EXECUTION
@@ -31,161 +47,106 @@ class TradeManager:
         sl_pct: float = 0.01
     ) -> bool:
 
-        if portfolio.has_position(symbol):
+        lock = self._get_lock(symbol)
 
-            log.info(
-                "BUY_SKIPPED",
-                extra={"symbol": symbol}
-            )
+        async with lock:
 
-            return False
+            if portfolio.has_position(symbol):
 
-        try:
-
-            order = await self.router.open_long(
-                ex,
-                symbol,
-                size_usdt
-            )
-
-            if not order:
-
-                log.error(
-                    "ORDER_FAILED",
+                log.info(
+                    "BUY_SKIPPED_ALREADY_OPEN",
                     extra={"symbol": symbol}
                 )
 
                 return False
 
-            # =================================
-            # FIX ORDER PARSING
-            # =================================
-
             try:
+
+                order = await self.router.open_long(
+                    ex,
+                    symbol,
+                    size_usdt
+                )
+
+                if not order:
+
+                    log.error(
+                        "ORDER_FAILED",
+                        extra={"symbol": symbol}
+                    )
+
+                    return False
 
                 qty = float(order.get("qty", 0))
                 fill_price = float(order.get("avg_price", 0))
 
-            except Exception:
+                if qty <= 0 or fill_price <= 0:
+
+                    log.error(
+                        "ORDER_FILL_INVALID",
+                        extra={"symbol": symbol}
+                    )
+
+                    return False
+
+                position = Position(
+                    symbol=symbol,
+                    qty=qty,
+                    entry_price=fill_price,
+                    entry_time=datetime.now(timezone.utc),
+                    atr_at_entry=0.0,
+                    stop_price=0.0,
+                    tp_price=0.0,
+                    best_price=fill_price,
+                    trailing_enabled=False,
+                    trailing_stop=0.0,
+                    trade_id=0
+                )
+
+                portfolio.open(
+                    position,
+                    current_idx=0,
+                    cooldown_candles=1
+                )
+
+                log.info(
+                    "POSITION_OPENED",
+                    extra={
+                        "symbol": symbol,
+                        "qty": qty,
+                        "price": fill_price
+                    }
+                )
+
+                ok = await self.place_safe_oco(
+                    ex,
+                    symbol,
+                    qty,
+                    fill_price,
+                    tp_pct,
+                    sl_pct
+                )
+
+                if not ok:
+
+                    log.warning(
+                        "OCO_FAILED_AFTER_BUY",
+                        extra={"symbol": symbol}
+                    )
+
+                return True
+
+            except Exception as e:
 
                 log.error(
-                    "ORDER_PARSE_FAILED",
-                    extra={"symbol": symbol, "order": order}
+                    "BUY_EXECUTION_FAILED",
+                    extra={
+                        "symbol": symbol,
+                        "err": str(e)
+                    }
                 )
 
                 return False
-
-            if qty <= 0 or fill_price <= 0:
-
-                log.error(
-                    "ORDER_FILL_INVALID",
-                    extra={"symbol": symbol}
-                )
-
-                return False
-
-            # =================================
-            # CREATE POSITION
-            # =================================
-
-            position = Position(
-                symbol=symbol,
-                qty=qty,
-                entry_price=fill_price,
-                entry_time=datetime.now(timezone.utc),
-                atr_at_entry=0.0,
-                stop_price=0.0,
-                tp_price=0.0,
-                best_price=fill_price,
-                trailing_enabled=False,
-                trailing_stop=0.0,
-                trade_id=0
-            )
-
-            portfolio.open(
-                position,
-                current_idx=0,
-                cooldown_candles=1
-            )
-
-            log.info(
-                "POSITION_OPENED",
-                extra={
-                    "symbol": symbol,
-                    "qty": qty,
-                    "price": fill_price
-                }
-            )
-
-            # =================================
-            # PLACE TP / SL
-            # =================================
-
-            ok = await self.place_safe_oco(
-                ex,
-                symbol,
-                qty,
-                fill_price,
-                tp_pct,
-                sl_pct
-            )
-
-            if not ok:
-
-                log.warning(
-                    "OCO_FAILED_AFTER_BUY",
-                    extra={"symbol": symbol}
-                )
-
-            return True
-
-        except Exception as e:
-
-            log.error(
-                "BUY_EXECUTION_FAILED",
-                extra={
-                    "symbol": symbol,
-                    "err": str(e)
-                }
-            )
-
-            return False
-
-    # =========================================================
-    # PARTIAL TAKE PROFIT
-    # =========================================================
-
-    async def place_partial_tp(
-        self,
-        ex: Exchange,
-        symbol: str,
-        qty: float,
-        entry_price: float,
-        tp_pct: float = 0.01
-    ) -> Optional[object]:
-
-        if qty <= 0:
-            return None
-
-        tp_price = entry_price * (1 + tp_pct)
-
-        try:
-
-            return await self.router.place_partial_tp_limit(
-                ex,
-                symbol,
-                qty * 0.5,
-                tp_price
-            )
-
-        except Exception as e:
-
-            log.warning(
-                "partial_tp_failed",
-                extra={"symbol": symbol, "err": str(e)}
-            )
-
-            return None
 
     # =========================================================
     # SAFE OCO
@@ -242,32 +203,6 @@ class TradeManager:
             return False
 
     # =========================================================
-    # CANCEL ALL ORDERS
-    # =========================================================
-
-    async def cancel_all_orders(
-        self,
-        ex: Exchange,
-        symbol: str
-    ) -> None:
-
-        try:
-
-            await ex.cancel_all(symbol)
-
-            log.info(
-                "cancel_all_orders",
-                extra={"exchange": ex.name, "symbol": symbol}
-            )
-
-        except Exception as e:
-
-            log.warning(
-                "cancel_all_failed",
-                extra={"exchange": ex.name, "symbol": symbol, "err": str(e)}
-            )
-
-    # =========================================================
     # CLOSE POSITION
     # =========================================================
 
@@ -278,39 +213,52 @@ class TradeManager:
         symbol: str
     ) -> None:
 
-        if not portfolio.has_position(symbol):
-            return
+        lock = self._get_lock(symbol)
 
-        pos = portfolio.positions.get(symbol)
+        async with lock:
 
-        if not pos:
-            return
+            if not portfolio.has_position(symbol):
+                return
 
-        qty = pos.qty
+            pos = portfolio.positions.get(symbol)
 
-        try:
+            if not pos:
+                return
 
-            await self.cancel_all_orders(ex, symbol)
+            qty = pos.qty
 
-            await self.router.close_long_market(
-                ex,
-                symbol,
-                qty
-            )
+            try:
 
-            portfolio.close(symbol)
+                await self.router.cancel_all(ex, symbol)
 
-            log.info(
-                "POSITION_CLOSED",
-                extra={"symbol": symbol, "qty": qty}
-            )
+                res = await self.router.close_long_market(
+                    ex,
+                    symbol,
+                    qty
+                )
 
-        except Exception as e:
+                if not res:
 
-            log.warning(
-                "close_position_failed",
-                extra={"symbol": symbol, "err": str(e)}
-            )
+                    log.error(
+                        "SELL_FAILED",
+                        extra={"symbol": symbol}
+                    )
+
+                    return
+
+                portfolio.close(symbol)
+
+                log.info(
+                    "POSITION_CLOSED",
+                    extra={"symbol": symbol, "qty": qty}
+                )
+
+            except Exception as e:
+
+                log.warning(
+                    "close_position_failed",
+                    extra={"symbol": symbol, "err": str(e)}
+                )
 
     # =========================================================
     # EMERGENCY CLOSE
@@ -323,32 +271,36 @@ class TradeManager:
         symbol: str
     ) -> None:
 
-        if not portfolio.has_position(symbol):
-            return
+        lock = self._get_lock(symbol)
 
-        pos = portfolio.positions.get(symbol)
+        async with lock:
 
-        if not pos:
-            return
+            if not portfolio.has_position(symbol):
+                return
 
-        try:
+            pos = portfolio.positions.get(symbol)
 
-            await self.router.close_long_market(
-                ex,
-                symbol,
-                pos.qty
-            )
+            if not pos:
+                return
 
-            portfolio.close(symbol)
+            try:
 
-            log.critical(
-                "EMERGENCY_POSITION_CLOSE",
-                extra={"symbol": symbol, "qty": pos.qty}
-            )
+                await self.router.close_long_market(
+                    ex,
+                    symbol,
+                    pos.qty
+                )
 
-        except Exception as e:
+                portfolio.close(symbol)
 
-            log.critical(
-                "EMERGENCY_CLOSE_FAILED",
-                extra={"symbol": symbol, "err": str(e)}
-            )
+                log.critical(
+                    "EMERGENCY_POSITION_CLOSE",
+                    extra={"symbol": symbol, "qty": pos.qty}
+                )
+
+            except Exception as e:
+
+                log.critical(
+                    "EMERGENCY_CLOSE_FAILED",
+                    extra={"symbol": symbol, "err": str(e)}
+                )
