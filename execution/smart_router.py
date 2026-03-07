@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -11,13 +12,49 @@ log = logging.getLogger("smart_router")
 
 @dataclass
 class ExecResult:
-
     entry: Optional[dict] = None
     partial_tp_order: Optional[dict] = None
     exit: Optional[dict] = None
 
 
 class SmartRouter:
+
+    MAX_RETRIES = 3
+    RETRY_DELAY = 0.7
+
+    # =========================================================
+    # INTERNAL RETRY ENGINE
+    # =========================================================
+
+    async def _retry(self, coro, label: str):
+
+        for attempt in range(1, self.MAX_RETRIES + 1):
+
+            try:
+                result = await coro()
+
+                if result:
+                    return result
+
+            except Exception as e:
+
+                log.warning(
+                    "ROUTER_RETRY_ERROR",
+                    extra={
+                        "label": label,
+                        "attempt": attempt,
+                        "err": str(e)
+                    }
+                )
+
+            await asyncio.sleep(self.RETRY_DELAY)
+
+        log.error(
+            "ROUTER_MAX_RETRIES_EXCEEDED",
+            extra={"label": label}
+        )
+
+        return None
 
     # =========================================================
     # OPEN LONG
@@ -39,18 +76,24 @@ class SmartRouter:
             }
         )
 
-        # ===============================
-        # BALANCE CHECK
-        # ===============================
+        try:
 
-        balance = await ex.get_balance("USDT")
+            balance = await ex.get_balance("USDT")
+
+        except Exception as e:
+
+            log.error(
+                "BALANCE_FETCH_FAILED",
+                extra={"err": str(e)}
+            )
+
+            return None
 
         if balance < quote_usdt:
 
             log.info(
                 "SKIP_TRADE_LOW_BALANCE",
                 extra={
-                    "exchange": ex.name,
                     "symbol": symbol,
                     "balance": balance,
                     "required": quote_usdt
@@ -59,27 +102,36 @@ class SmartRouter:
 
             return None
 
-        # ===============================
-        # EXECUTE BUY
-        # ===============================
+        async def _buy():
+            return await ex.market_buy_quote(symbol, quote_usdt)
 
-        res = await ex.market_buy_quote(symbol, quote_usdt)
+        res = await self._retry(_buy, "market_buy")
+
+        if not res:
+            return None
+
+        if float(res.get("qty", 0)) <= 0:
+
+            log.error(
+                "ORDER_INVALID_QTY",
+                extra={"symbol": symbol}
+            )
+
+            return None
 
         log.info(
             "open_long_done",
             extra={
-                "exchange": ex.name,
                 "symbol": symbol,
                 "qty": res.get("qty"),
-                "avg": res.get("avg_price"),
-                "status": res.get("status")
+                "avg": res.get("avg_price")
             }
         )
 
         return res
 
     # =========================================================
-    # PARTIAL TAKE PROFIT
+    # PARTIAL TP
     # =========================================================
 
     async def place_partial_tp_limit(
@@ -90,37 +142,22 @@ class SmartRouter:
         tp_price: float
     ) -> Optional[dict]:
 
-        try:
+        async def _tp():
+            return await ex.limit_sell_base(symbol, qty, tp_price)
 
-            o = await ex.limit_sell_base(symbol, qty, tp_price)
+        res = await self._retry(_tp, "partial_tp")
 
-            log.info(
-                "partial_tp_limit_placed",
-                extra={
-                    "exchange": ex.name,
-                    "symbol": symbol,
-                    "qty": qty,
-                    "tp": tp_price
-                }
-            )
-
-            return o
-
-        except Exception as e:
+        if not res:
 
             log.warning(
-                "partial_tp_limit_failed",
-                extra={
-                    "exchange": ex.name,
-                    "symbol": symbol,
-                    "err": str(e)
-                }
+                "PARTIAL_TP_FAILED",
+                extra={"symbol": symbol}
             )
 
-            return None
+        return res
 
     # =========================================================
-    # PLACE OCO
+    # OCO PLACEMENT
     # =========================================================
 
     async def place_oco_tp_sl(
@@ -136,39 +173,34 @@ class SmartRouter:
         tp_price = entry_price * (1 + tp_pct)
         sl_price = entry_price * (1 - sl_pct)
 
-        try:
+        async def _tp():
+            return await ex.limit_sell_base(symbol, qty, tp_price)
 
-            tp_order = await ex.limit_sell_base(
-                symbol,
-                qty,
-                tp_price
-            )
+        async def _sl():
+            return await ex.limit_sell_base(symbol, qty, sl_price)
 
-            sl_order = await ex.limit_sell_base(
-                symbol,
-                qty,
-                sl_price
-            )
+        tp_order = await self._retry(_tp, "tp_order")
+        sl_order = await self._retry(_sl, "sl_order")
 
-            log.info(
-                "OCO_PLACED",
-                extra={
-                    "symbol": symbol,
-                    "tp": tp_price,
-                    "sl": sl_price
-                }
-            )
+        if not tp_order or not sl_order:
 
-            return tp_order, sl_order
-
-        except Exception as e:
-
-            log.warning(
-                "OCO_PLACEMENT_FAILED",
-                extra={"symbol": symbol, "err": str(e)}
+            log.error(
+                "OCO_PARTIAL_FAILURE",
+                extra={"symbol": symbol}
             )
 
             return None, None
+
+        log.info(
+            "OCO_PLACED",
+            extra={
+                "symbol": symbol,
+                "tp": tp_price,
+                "sl": sl_price
+            }
+        )
+
+        return tp_order, sl_order
 
     # =========================================================
     # VERIFY OCO
@@ -181,6 +213,7 @@ class SmartRouter:
     ) -> bool:
 
         # simplified verification
+
         log.info(
             "OCO_VERIFY_OK",
             extra={"symbol": symbol}
@@ -201,23 +234,29 @@ class SmartRouter:
 
         log.info(
             "close_long_request",
-            extra={
-                "exchange": ex.name,
-                "symbol": symbol,
-                "qty": qty
-            }
+            extra={"symbol": symbol, "qty": qty}
         )
 
-        res = await ex.market_sell_base(symbol, qty)
+        async def _sell():
+            return await ex.market_sell_base(symbol, qty)
+
+        res = await self._retry(_sell, "market_sell")
+
+        if not res:
+
+            log.error(
+                "SELL_FAILED",
+                extra={"symbol": symbol}
+            )
+
+            return None
 
         log.info(
             "close_long_done",
             extra={
-                "exchange": ex.name,
                 "symbol": symbol,
                 "qty": res.get("qty"),
-                "avg": res.get("avg_price"),
-                "status": res.get("status")
+                "avg": res.get("avg_price")
             }
         )
 
@@ -233,25 +272,7 @@ class SmartRouter:
         symbol: str
     ) -> None:
 
-        try:
+        async def _cancel():
+            return await ex.cancel_all(symbol)
 
-            await ex.cancel_all(symbol)
-
-            log.info(
-                "cancel_all_ok",
-                extra={
-                    "exchange": ex.name,
-                    "symbol": symbol
-                }
-            )
-
-        except Exception as e:
-
-            log.warning(
-                "cancel_all_failed",
-                extra={
-                    "exchange": ex.name,
-                    "symbol": symbol,
-                    "err": str(e)
-                }
-            )
+        await self._retry(_cancel, "cancel_all")
