@@ -267,9 +267,11 @@ class Engine:
             if msg.symbol not in self._df15:
                 continue
 
+            idx = len(self._df15[msg.symbol])
+
             await self.maybe_open_position(
                 msg.symbol,
-                0
+                idx
             )
 
 
