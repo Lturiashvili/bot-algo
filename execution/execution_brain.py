@@ -134,30 +134,40 @@ class ExecutionBrain:
     # DECISION MATRIX
     # ------------------------------------------------
 
-    def _matrix_decision(self, regime, score, exposure):
+def _matrix_decision(self, regime, score, exposure):
 
-        # Bull market
-        if regime == "BULL":
+    # Bull market
+    if regime == "BULL":
 
-            if score > 75 and exposure < 0.4:
-                return 1.0
+        if score > 75 and exposure < 0.4:
+            return 1.0
 
-            if score > 70 and exposure < 0.6:
-                return 0.6
+        if score > 70 and exposure < 0.6:
+            return 0.6
 
-        # Range market
-        if regime == "RANGE":
 
-            if score > 80 and exposure < 0.5:
-                return 0.5
+    # Neutral market
+    if regime == "NEUTRAL":
 
-        # Bear market
-        if regime == "BEAR":
+        if score > 65 and exposure < 0.5:
+            return 0.5
 
-            if score > 85 and exposure < 0.2:
-                return 0.3
 
-        return None
+    # Range market
+    if regime == "RANGE":
+
+        if score > 80 and exposure < 0.5:
+            return 0.5
+
+
+    # Bear market
+    if regime == "BEAR":
+
+        if score > 85 and exposure < 0.2:
+            return 0.3
+
+
+    return None
 
     # ------------------------------------------------
     # REGISTER TRADE
