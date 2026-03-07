@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from datetime import datetime, timezone
 
 from execution.exchange.base import Exchange
-from execution.portfolio import Portfolio
+from execution.portfolio import Portfolio, Position
 from execution.smart_router import SmartRouter
 
 log = logging.getLogger("trade_manager")
@@ -24,7 +25,7 @@ class TradeManager:
         ex: Exchange,
         portfolio: Portfolio,
         symbol: str,
-        qty: float,
+        size_usdt: float,
         price: float,
         tp_pct: float = 0.02,
         sl_pct: float = 0.01
@@ -41,18 +42,54 @@ class TradeManager:
 
         try:
 
-            # OPEN MARKET ORDER
-            await self.router.open_long(
+            # ============================
+            # OPEN ORDER
+            # ============================
+
+            order = await self.router.open_long(
                 ex,
                 symbol,
-                qty
+                size_usdt
             )
 
-            # SAVE POSITION
-            portfolio.open_position(
+            qty = getattr(order, "executed_qty", None)
+            fill_price = getattr(order, "avg_price", None)
+
+            if not qty or not fill_price:
+
+                log.error(
+                    "ORDER_FILL_FAILED",
+                    extra={"symbol": symbol}
+                )
+
+                return False
+
+            # ============================
+            # CREATE POSITION OBJECT
+            # ============================
+
+            position = Position(
                 symbol=symbol,
-                qty=qty,
-                entry_price=price
+                qty=float(qty),
+                entry_price=float(fill_price),
+                entry_time=datetime.now(timezone.utc),
+                atr_at_entry=0.0,
+                stop_price=0.0,
+                tp_price=0.0,
+                best_price=float(fill_price),
+                trailing_enabled=False,
+                trailing_stop=0.0,
+                trade_id=0
+            )
+
+            # ============================
+            # UPDATE PORTFOLIO
+            # ============================
+
+            portfolio.open(
+                position,
+                current_idx=0,
+                cooldown_candles=1
             )
 
             log.info(
@@ -60,16 +97,19 @@ class TradeManager:
                 extra={
                     "symbol": symbol,
                     "qty": qty,
-                    "price": price
+                    "price": fill_price
                 }
             )
 
+            # ============================
             # PLACE TP / SL
+            # ============================
+
             ok = await self.place_safe_oco(
                 ex,
                 symbol,
-                qty,
-                price,
+                float(qty),
+                float(fill_price),
                 tp_pct,
                 sl_pct
             )
@@ -122,10 +162,12 @@ class TradeManager:
             )
 
         except Exception as e:
+
             log.warning(
                 "partial_tp_failed",
                 extra={"symbol": symbol, "err": str(e)}
             )
+
             return None
 
     # =========================================================
