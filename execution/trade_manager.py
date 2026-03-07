@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import logging
@@ -15,6 +14,86 @@ class TradeManager:
 
     def __init__(self, router: SmartRouter):
         self.router = router
+
+    # =========================================================
+    # BUY EXECUTION (OPEN LONG)
+    # =========================================================
+
+    async def open_long(
+        self,
+        ex: Exchange,
+        portfolio: Portfolio,
+        symbol: str,
+        qty: float,
+        price: float,
+        tp_pct: float = 0.02,
+        sl_pct: float = 0.01
+    ) -> bool:
+
+        if portfolio.has_position(symbol):
+
+            log.info(
+                "BUY_SKIPPED",
+                extra={"symbol": symbol}
+            )
+
+            return False
+
+        try:
+
+            # OPEN MARKET ORDER
+            await self.router.open_long(
+                ex,
+                symbol,
+                qty
+            )
+
+            # SAVE POSITION
+            portfolio.open_position(
+                symbol=symbol,
+                qty=qty,
+                entry_price=price
+            )
+
+            log.info(
+                "POSITION_OPENED",
+                extra={
+                    "symbol": symbol,
+                    "qty": qty,
+                    "price": price
+                }
+            )
+
+            # PLACE TP / SL
+            ok = await self.place_safe_oco(
+                ex,
+                symbol,
+                qty,
+                price,
+                tp_pct,
+                sl_pct
+            )
+
+            if not ok:
+
+                log.warning(
+                    "OCO_FAILED_AFTER_BUY",
+                    extra={"symbol": symbol}
+                )
+
+            return True
+
+        except Exception as e:
+
+            log.error(
+                "BUY_EXECUTION_FAILED",
+                extra={
+                    "symbol": symbol,
+                    "err": str(e)
+                }
+            )
+
+            return False
 
     # =========================================================
     # PARTIAL TAKE PROFIT
@@ -45,10 +124,7 @@ class TradeManager:
         except Exception as e:
             log.warning(
                 "partial_tp_failed",
-                extra={
-                    "symbol": symbol,
-                    "err": str(e)
-                }
+                extra={"symbol": symbol, "err": str(e)}
             )
             return None
 
@@ -67,6 +143,7 @@ class TradeManager:
     ) -> bool:
 
         try:
+
             tp, sl = await self.router.place_oco_tp_sl(
                 ex,
                 symbol,
@@ -77,15 +154,18 @@ class TradeManager:
             )
 
             if not tp or not sl:
+
                 log.warning(
                     "OCO_PLACE_FAILED",
                     extra={"symbol": symbol}
                 )
+
                 return False
 
             ok = await self.router.verify_oco(ex, symbol)
 
             if not ok:
+
                 log.warning(
                     "OCO_VERIFY_FAILED",
                     extra={"symbol": symbol}
@@ -94,17 +174,16 @@ class TradeManager:
             return ok
 
         except Exception as e:
+
             log.warning(
                 "place_safe_oco_error",
-                extra={
-                    "symbol": symbol,
-                    "err": str(e)
-                }
+                extra={"symbol": symbol, "err": str(e)}
             )
+
             return False
 
     # =========================================================
-    # CANCEL ALL ORDERS (SAFE CLEANUP)
+    # CANCEL ALL ORDERS
     # =========================================================
 
     async def cancel_all_orders(
@@ -114,24 +193,19 @@ class TradeManager:
     ) -> None:
 
         try:
+
             await ex.cancel_all(symbol)
 
             log.info(
                 "cancel_all_orders",
-                extra={
-                    "exchange": ex.name,
-                    "symbol": symbol
-                }
+                extra={"exchange": ex.name, "symbol": symbol}
             )
 
         except Exception as e:
+
             log.warning(
                 "cancel_all_failed",
-                extra={
-                    "exchange": ex.name,
-                    "symbol": symbol,
-                    "err": str(e)
-                }
+                extra={"exchange": ex.name, "symbol": symbol, "err": str(e)}
             )
 
     # =========================================================
@@ -156,6 +230,7 @@ class TradeManager:
         qty = pos.qty
 
         try:
+
             await self.cancel_all_orders(ex, symbol)
 
             await self.router.close_long(
@@ -168,23 +243,18 @@ class TradeManager:
 
             log.info(
                 "position_closed",
-                extra={
-                    "symbol": symbol,
-                    "qty": qty
-                }
+                extra={"symbol": symbol, "qty": qty}
             )
 
         except Exception as e:
+
             log.warning(
                 "close_position_failed",
-                extra={
-                    "symbol": symbol,
-                    "err": str(e)
-                }
+                extra={"symbol": symbol, "err": str(e)}
             )
 
     # =========================================================
-    # EMERGENCY CLOSE (LAST RESORT)
+    # EMERGENCY CLOSE
     # =========================================================
 
     async def emergency_close(
@@ -203,6 +273,7 @@ class TradeManager:
             return
 
         try:
+
             await self.router.close_position(
                 ex,
                 symbol,
@@ -213,17 +284,12 @@ class TradeManager:
 
             log.critical(
                 "EMERGENCY_POSITION_CLOSE",
-                extra={
-                    "symbol": symbol,
-                    "qty": pos.qty
-                }
+                extra={"symbol": symbol, "qty": pos.qty}
             )
 
         except Exception as e:
+
             log.critical(
                 "EMERGENCY_CLOSE_FAILED",
-                extra={
-                    "symbol": symbol,
-                    "err": str(e)
-                }
+                extra={"symbol": symbol, "err": str(e)}
             )
