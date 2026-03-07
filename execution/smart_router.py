@@ -1,71 +1,24 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
-from execution.exchange.base import Exchange
+from execution.exchange.base import Exchange, OrderResult
 
 log = logging.getLogger("smart_router")
 
 
 @dataclass
 class ExecResult:
-    entry: Optional[dict] = None
-    partial_tp_order: Optional[dict] = None
-    exit: Optional[dict] = None
+    entry: Optional[OrderResult] = None
+    partial_tp_order: Optional[OrderResult] = None
+    exit: Optional[OrderResult] = None
 
 
 class SmartRouter:
 
-    MAX_RETRIES = 3
-    RETRY_DELAY = 0.7
-
-    # =========================================================
-    # INTERNAL RETRY ENGINE
-    # =========================================================
-
-    async def _retry(self, coro, label: str):
-
-        for attempt in range(1, self.MAX_RETRIES + 1):
-
-            try:
-                result = await coro()
-
-                if result:
-                    return result
-
-            except Exception as e:
-
-                log.warning(
-                    "ROUTER_RETRY_ERROR",
-                    extra={
-                        "label": label,
-                        "attempt": attempt,
-                        "err": str(e)
-                    }
-                )
-
-            await asyncio.sleep(self.RETRY_DELAY)
-
-        log.error(
-            "ROUTER_MAX_RETRIES_EXCEEDED",
-            extra={"label": label}
-        )
-
-        return None
-
-    # =========================================================
-    # OPEN LONG
-    # =========================================================
-
-    async def open_long(
-        self,
-        ex: Exchange,
-        symbol: str,
-        quote_usdt: float
-    ) -> Optional[dict]:
+    async def open_long(self, ex: Exchange, symbol: str, quote_usdt: float) -> Optional[OrderResult]:
 
         log.info(
             "open_long_request",
@@ -76,24 +29,14 @@ class SmartRouter:
             }
         )
 
-        try:
-
-            balance = await ex.get_balance("USDT")
-
-        except Exception as e:
-
-            log.error(
-                "BALANCE_FETCH_FAILED",
-                extra={"err": str(e)}
-            )
-
-            return None
+        balance = await ex.get_usdt_balance()
 
         if balance < quote_usdt:
 
             log.info(
                 "SKIP_TRADE_LOW_BALANCE",
                 extra={
+                    "exchange": ex.name,
                     "symbol": symbol,
                     "balance": balance,
                     "required": quote_usdt
@@ -102,37 +45,21 @@ class SmartRouter:
 
             return None
 
-        async def _buy():
-            return await ex.market_buy_quote(symbol, quote_usdt)
-
-        res = await self._retry(_buy, "market_buy")
-
-        if not res:
-            return None
-
-        if float(res.get("qty", 0)) <= 0:
-
-            log.error(
-                "ORDER_INVALID_QTY",
-                extra={"symbol": symbol}
-            )
-
-            return None
+        res = await ex.market_buy_quote(symbol, quote_usdt)
 
         log.info(
             "open_long_done",
             extra={
+                "exchange": ex.name,
                 "symbol": symbol,
-                "qty": res.get("qty"),
-                "avg": res.get("avg_price")
+                "qty": res.get("qty") if isinstance(res, dict) else getattr(res, "executed_qty", None),
+                "avg": res.get("avg_price") if isinstance(res, dict) else getattr(res, "avg_price", None),
+                "status": res.get("status") if isinstance(res, dict) else getattr(res, "status", None)
             }
         )
 
         return res
 
-    # =========================================================
-    # PARTIAL TP
-    # =========================================================
 
     async def place_partial_tp_limit(
         self,
@@ -140,139 +67,262 @@ class SmartRouter:
         symbol: str,
         qty: float,
         tp_price: float
-    ) -> Optional[dict]:
+    ) -> Optional[OrderResult]:
 
-        async def _tp():
-            return await ex.limit_sell_base(symbol, qty, tp_price)
+        try:
 
-        res = await self._retry(_tp, "partial_tp")
+            o = await ex.limit_sell_base(symbol, qty, tp_price)
 
-        if not res:
+            log.info(
+                "partial_tp_limit_placed",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol,
+                    "qty": qty,
+                    "tp": tp_price,
+                    "order_id": o.order_id
+                }
+            )
+
+            return o
+
+        except Exception as e:
 
             log.warning(
-                "PARTIAL_TP_FAILED",
-                extra={"symbol": symbol}
+                "partial_tp_limit_failed",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol,
+                    "err": str(e)
+                }
             )
 
-        return res
+            return None
 
-    # =========================================================
-    # OCO PLACEMENT
-    # =========================================================
-
-    async def place_oco_tp_sl(
-        self,
-        ex: Exchange,
-        symbol: str,
-        qty: float,
-        entry_price: float,
-        tp_pct: float,
-        sl_pct: float
-    ) -> Tuple[Optional[dict], Optional[dict]]:
-
-        tp_price = entry_price * (1 + tp_pct)
-        sl_price = entry_price * (1 - sl_pct)
-
-        async def _tp():
-            return await ex.limit_sell_base(symbol, qty, tp_price)
-
-        async def _sl():
-            return await ex.limit_sell_base(symbol, qty, sl_price)
-
-        tp_order = await self._retry(_tp, "tp_order")
-        sl_order = await self._retry(_sl, "sl_order")
-
-        if not tp_order or not sl_order:
-
-            log.error(
-                "OCO_PARTIAL_FAILURE",
-                extra={"symbol": symbol}
-            )
-
-            return None, None
-
-        log.info(
-            "OCO_PLACED",
-            extra={
-                "symbol": symbol,
-                "tp": tp_price,
-                "sl": sl_price
-            }
-        )
-
-        return tp_order, sl_order
-
-    # =========================================================
-    # VERIFY OCO
-    # =========================================================
-
-    async def verify_oco(
-        self,
-        ex: Exchange,
-        symbol: str
-    ) -> bool:
-
-        # simplified verification
-
-        log.info(
-            "OCO_VERIFY_OK",
-            extra={"symbol": symbol}
-        )
-
-        return True
-
-    # =========================================================
-    # CLOSE LONG
-    # =========================================================
 
     async def close_long_market(
         self,
         ex: Exchange,
         symbol: str,
         qty: float
-    ) -> Optional[dict]:
+    ) -> Optional[OrderResult]:
 
         log.info(
             "close_long_request",
-            extra={"symbol": symbol, "qty": qty}
+            extra={
+                "exchange": ex.name,
+                "symbol": symbol,
+                "qty": qty
+            }
         )
 
-        async def _sell():
-            return await ex.market_sell_base(symbol, qty)
-
-        res = await self._retry(_sell, "market_sell")
-
-        if not res:
-
-            log.error(
-                "SELL_FAILED",
-                extra={"symbol": symbol}
-            )
-
-            return None
+        res = await ex.market_sell_base(symbol, qty)
 
         log.info(
             "close_long_done",
             extra={
+                "exchange": ex.name,
                 "symbol": symbol,
-                "qty": res.get("qty"),
-                "avg": res.get("avg_price")
+                "qty": getattr(res, "executed_qty", None),
+                "avg": getattr(res, "avg_price", None),
+                "status": getattr(res, "status", None)
             }
         )
 
         return res
 
-    # =========================================================
-    # CANCEL ALL
-    # =========================================================
 
-    async def cancel_all(
+    # =========================================================
+    # WRAPPER FOR POSITION MANAGER
+    # =========================================================
+    async def close_long(
         self,
         ex: Exchange,
-        symbol: str
-    ) -> None:
+        symbol: str,
+        qty: float
+    ) -> Optional[OrderResult]:
 
-        async def _cancel():
-            return await ex.cancel_all(symbol)
+        if qty <= 0:
+            return None
 
-        await self._retry(_cancel, "cancel_all")
+        return await self.close_long_market(ex, symbol, qty)
+
+
+    # =========================================================
+    # OCO TAKE PROFIT + STOP LOSS
+    # =========================================================
+    async def place_oco_tp_sl(
+        self,
+        ex: Exchange,
+        symbol: str,
+        qty: float,
+        entry_price: float,
+        tp_pct: float = 0.02,
+        sl_pct: float = 0.01
+    ):
+
+        tp_price = entry_price * (1 + tp_pct)
+        sl_price = entry_price * (1 - sl_pct)
+
+        log.info(
+            "placing_oco_orders",
+            extra={
+                "symbol": symbol,
+                "tp": tp_price,
+                "sl": sl_price,
+                "qty": qty
+            }
+        )
+
+        try:
+
+            tp_order = await ex.limit_sell_base(symbol, qty, tp_price)
+
+            sl_order = await ex.stop_market_sell(
+                symbol,
+                qty,
+                sl_price
+            )
+
+            log.info(
+                "oco_orders_placed",
+                extra={
+                    "symbol": symbol,
+                    "tp_order": getattr(tp_order, "order_id", None),
+                    "sl_order": getattr(sl_order, "order_id", None)
+                }
+            )
+
+            return tp_order, sl_order
+
+        except Exception as e:
+
+            log.warning(
+                "oco_order_failed",
+                extra={"symbol": symbol, "err": str(e)}
+            )
+
+            return None, None
+
+
+    # =========================================================
+    # VERIFY OCO EXISTS (used by main.py)
+    # =========================================================
+    async def verify_oco(self, ex: Exchange, symbol: str) -> bool:
+
+        try:
+
+            orders = await ex.fetch_open_orders(symbol)
+
+            tp_found = False
+            sl_found = False
+
+            for o in orders:
+
+                otype = str(o.get("type", "")).lower()
+
+                if "limit" in otype or "take_profit" in otype:
+                    tp_found = True
+
+                if "stop" in otype:
+                    sl_found = True
+
+            log.info(
+                "verify_oco_result",
+                extra={
+                    "symbol": symbol,
+                    "tp_found": tp_found,
+                    "sl_found": sl_found
+                }
+            )
+
+            return tp_found and sl_found
+
+        except Exception as e:
+
+            log.warning(
+                "verify_oco_failed",
+                extra={
+                    "symbol": symbol,
+                    "err": str(e)
+                }
+            )
+
+            return False
+
+
+    # =========================================================
+    # EMERGENCY CLOSE (OCO failed protection)
+    # =========================================================
+    async def close_position(
+        self,
+        ex: Exchange,
+        symbol: str,
+        qty: float
+    ) -> Optional[OrderResult]:
+
+        if qty <= 0:
+            return None
+
+        try:
+
+            log.critical(
+                "EMERGENCY_CLOSE_POSITION",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol,
+                    "qty": qty
+                }
+            )
+
+            res = await ex.market_sell_base(symbol, qty)
+
+            log.critical(
+                "EMERGENCY_CLOSE_DONE",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol,
+                    "qty": getattr(res, "executed_qty", None),
+                    "avg": getattr(res, "avg_price", None)
+                }
+            )
+
+            return res
+
+        except Exception as e:
+
+            log.critical(
+                "EMERGENCY_CLOSE_FAILED",
+                extra={
+                    "symbol": symbol,
+                    "err": str(e)
+                }
+            )
+
+            return None
+
+
+    async def cancel_all(self, ex: Exchange, symbol: str) -> None:
+
+        try:
+
+            await ex.cancel_all(symbol)
+
+            log.info(
+                "cancel_all_ok",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol
+                }
+            )
+
+        except Exception as e:
+
+            log.warning(
+                "cancel_all_failed",
+                extra={
+                    "exchange": ex.name,
+                    "symbol": symbol,
+                    "err": str(e)
+                }
+            )
