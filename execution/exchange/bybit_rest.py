@@ -1,5 +1,6 @@
 """
 Production-grade Bybit REST client (Spot V5)
+Compatible with SmartRouter / TradeManager execution pipeline
 """
 
 import aiohttp
@@ -9,7 +10,6 @@ import json
 import logging
 import time
 from typing import Dict, List, Any, Optional
-
 
 logger = logging.getLogger(__name__)
 
@@ -85,79 +85,38 @@ class BybitREST:
 
 
 # ==========================================================
-# Private Ping
+# SIGNATURE
 # ==========================================================
 
-    async def private_ping(self) -> Dict[str, Any]:
+    def _sign(self, payload: str) -> str:
+
+        return hmac.new(
+            self.api_secret.encode(),
+            payload.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+
+# ==========================================================
+# BALANCE
+# ==========================================================
+
+    async def get_balance(self, asset: str = "USDT") -> float:
 
         endpoint = "/v5/account/wallet-balance"
         url = f"{self.BASE_URL}{endpoint}"
 
         timestamp = str(int(time.time() * 1000))
-        query_string = "accountType=UNIFIED"
+        query = "accountType=UNIFIED"
 
         sign_payload = (
             timestamp
             + self.api_key
             + str(self.recv_window)
-            + query_string
+            + query
         )
 
-        signature = hmac.new(
-            self.api_secret.encode(),
-            sign_payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
-
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-RECV-WINDOW": str(self.recv_window),
-        }
-
-        session = await self._get_session()
-
-        async with session.get(
-            url,
-            headers=headers,
-            params={"accountType": "UNIFIED"},
-        ) as resp:
-
-            data = await resp.json()
-
-        if data.get("retCode") != 0:
-            raise Exception(f"Bybit private ping error: {data}")
-
-        logger.info("PRIVATE_PING_OK")
-
-        return data
-
-
-# ==========================================================
-# GET USDT BALANCE
-# ==========================================================
-
-    async def get_usdt_balance(self) -> float:
-
-        endpoint = "/v5/account/wallet-balance"
-        url = f"{self.BASE_URL}{endpoint}"
-
-        timestamp = str(int(time.time() * 1000))
-        query_string = "accountType=UNIFIED"
-
-        sign_payload = (
-            timestamp
-            + self.api_key
-            + str(self.recv_window)
-            + query_string
-        )
-
-        signature = hmac.new(
-            self.api_secret.encode(),
-            sign_payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
+        signature = self._sign(sign_payload)
 
         headers = {
             "X-BAPI-API-KEY": self.api_key,
@@ -182,7 +141,7 @@ class BybitREST:
         coins = data["result"]["list"][0]["coin"]
 
         for c in coins:
-            if c["coin"] == "USDT":
+            if c["coin"] == asset:
                 return float(c["walletBalance"])
 
         return 0.0
@@ -241,7 +200,7 @@ class BybitREST:
 
 
 # ==========================================================
-# MARKET BUY (QUOTE SIZE)
+# MARKET BUY
 # ==========================================================
 
     async def market_buy_quote(
@@ -272,11 +231,7 @@ class BybitREST:
             + body_str
         )
 
-        signature = hmac.new(
-            self.api_secret.encode(),
-            sign_payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
+        signature = self._sign(sign_payload)
 
         headers = {
             "X-BAPI-API-KEY": self.api_key,
@@ -305,16 +260,184 @@ class BybitREST:
         parsed = {
             "order_id": result.get("orderId"),
             "symbol": result.get("symbol"),
-            "side": result.get("side"),
             "status": result.get("orderStatus"),
-            "qty": result.get("qty"),
-            "avg_price": result.get("avgPrice"),
-            "raw": result,
+            "qty": float(result.get("qty", 0)),
+            "avg_price": float(result.get("avgPrice", 0)),
         }
 
         logger.info(f"MARKET_BUY_OK {symbol}")
 
         return parsed
+
+
+# ==========================================================
+# MARKET SELL
+# ==========================================================
+
+    async def market_sell_base(
+        self,
+        symbol: str,
+        qty: float
+    ) -> Dict[str, Any]:
+
+        url = f"{self.BASE_URL}/v5/order/create"
+
+        timestamp = str(int(time.time() * 1000))
+
+        body = {
+            "category": "spot",
+            "symbol": symbol,
+            "side": "Sell",
+            "orderType": "Market",
+            "qty": str(qty),
+        }
+
+        body_str = json.dumps(body, separators=(",", ":"))
+
+        sign_payload = (
+            timestamp
+            + self.api_key
+            + str(self.recv_window)
+            + body_str
+        )
+
+        signature = self._sign(sign_payload)
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-RECV-WINDOW": str(self.recv_window),
+            "Content-Type": "application/json",
+        }
+
+        session = await self._get_session()
+
+        async with session.post(
+            url,
+            headers=headers,
+            data=body_str,
+        ) as resp:
+
+            data = await resp.json()
+
+        if data.get("retCode") != 0:
+            raise Exception(f"Bybit sell error: {data}")
+
+        logger.info(f"MARKET_SELL_OK {symbol}")
+
+        return data
+
+
+# ==========================================================
+# LIMIT SELL
+# ==========================================================
+
+    async def limit_sell_base(
+        self,
+        symbol: str,
+        qty: float,
+        price: float
+    ):
+
+        url = f"{self.BASE_URL}/v5/order/create"
+
+        timestamp = str(int(time.time() * 1000))
+
+        body = {
+            "category": "spot",
+            "symbol": symbol,
+            "side": "Sell",
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(price),
+            "timeInForce": "GTC",
+        }
+
+        body_str = json.dumps(body, separators=(",", ":"))
+
+        sign_payload = (
+            timestamp
+            + self.api_key
+            + str(self.recv_window)
+            + body_str
+        )
+
+        signature = self._sign(sign_payload)
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-RECV-WINDOW": str(self.recv_window),
+            "Content-Type": "application/json",
+        }
+
+        session = await self._get_session()
+
+        async with session.post(
+            url,
+            headers=headers,
+            data=body_str,
+        ) as resp:
+
+            data = await resp.json()
+
+        if data.get("retCode") != 0:
+            raise Exception(f"Bybit limit sell error: {data}")
+
+        logger.info(f"LIMIT_SELL_OK {symbol}")
+
+        return data
+
+
+# ==========================================================
+# CANCEL ALL
+# ==========================================================
+
+    async def cancel_all(self, symbol: str):
+
+        url = f"{self.BASE_URL}/v5/order/cancel-all"
+
+        timestamp = str(int(time.time() * 1000))
+
+        body = {
+            "category": "spot",
+            "symbol": symbol
+        }
+
+        body_str = json.dumps(body, separators=(",", ":"))
+
+        sign_payload = (
+            timestamp
+            + self.api_key
+            + str(self.recv_window)
+            + body_str
+        )
+
+        signature = self._sign(sign_payload)
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-RECV-WINDOW": str(self.recv_window),
+            "Content-Type": "application/json",
+        }
+
+        session = await self._get_session()
+
+        async with session.post(
+            url,
+            headers=headers,
+            data=body_str,
+        ) as resp:
+
+            data = await resp.json()
+
+        logger.info(f"CANCEL_ALL {symbol}")
+
+        return data
 
 
 # ==========================================================
