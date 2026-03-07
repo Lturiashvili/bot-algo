@@ -16,11 +16,11 @@ class KlineMsg:
     symbol: str
     timeframe: str
     is_closed: bool
-    o: float
-    h: float
-    l: float
-    c: float
-    v: float
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
     start_ms: int
     end_ms: int
 
@@ -184,11 +184,11 @@ class BybitWS:
                                 symbol=symbol,
                                 timeframe=timeframe,
                                 is_closed=bool(item.get("confirm", False)),
-                                o=float(item.get("open")),
-                                h=float(item.get("high")),
-                                l=float(item.get("low")),
-                                c=float(item.get("close")),
-                                v=float(item.get("volume")),
+                                open=float(item.get("open")),
+                                high=float(item.get("high")),
+                                low=float(item.get("low")),
+                                close=float(item.get("close")),
+                                volume=float(item.get("volume")),
                                 start_ms=start,
                                 end_ms=int(item.get("end")),
                             )
