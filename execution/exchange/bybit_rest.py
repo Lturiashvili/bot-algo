@@ -1,7 +1,4 @@
-"""
-Production-grade Bybit REST client (Spot V5)
-FULLY FIXED VERSION
-"""
+# execution/exchange/bybit_rest.py
 
 import aiohttp
 import asyncio
@@ -14,10 +11,6 @@ from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-
-# ==========================================================
-# INTERVAL NORMALIZER (FIX)
-# ==========================================================
 
 def normalize_interval(interval: str) -> str:
 
@@ -63,10 +56,6 @@ class BybitREST:
 
         self._session: Optional[aiohttp.ClientSession] = None
 
-    # ==========================================================
-    # SESSION
-    # ==========================================================
-
     async def _get_session(self) -> aiohttp.ClientSession:
 
         if self._session is None or self._session.closed:
@@ -76,10 +65,6 @@ class BybitREST:
             self._session = aiohttp.ClientSession(timeout=timeout)
 
         return self._session
-
-    # ==========================================================
-    # RETRY ENGINE
-    # ==========================================================
 
     async def _request(self, method: str, url: str, **kwargs):
 
@@ -97,17 +82,11 @@ class BybitREST:
 
             except Exception as e:
 
-                logger.warning(
-                    f"BYBIT_RETRY attempt={attempt} err={e}"
-                )
+                logger.warning(f"BYBIT_RETRY attempt={attempt} err={e}")
 
                 await asyncio.sleep(self.RETRY_DELAY)
 
         raise RuntimeError(f"Bybit request failed: {url}")
-
-    # ==========================================================
-    # SIGN
-    # ==========================================================
 
     def _sign(self, payload: str) -> str:
 
@@ -118,7 +97,7 @@ class BybitREST:
         ).hexdigest()
 
     # ==========================================================
-    # FETCH OHLCV (FIXED)
+    # OHLCV
     # ==========================================================
 
     async def fetch_ohlcv(
@@ -145,18 +124,10 @@ class BybitREST:
             params=params
         )
 
-        if not data:
-            raise RuntimeError("Empty response from Bybit")
-
         if data.get("retCode") != 0:
             raise RuntimeError(f"Kline error: {data}")
 
-        result = data.get("result")
-
-        if not result:
-            return []
-
-        raw = result.get("list", [])
+        raw = data["result"]["list"]
 
         candles = []
 
@@ -183,30 +154,9 @@ class BybitREST:
 
         url = f"{self.BASE_URL}/v5/account/wallet-balance"
 
-        timestamp = str(int(time.time() * 1000))
-
-        query = "accountType=UNIFIED"
-
-        sign_payload = (
-            timestamp
-            + self.api_key
-            + str(self.recv_window)
-            + query
-        )
-
-        signature = self._sign(sign_payload)
-
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-RECV-WINDOW": str(self.recv_window),
-        }
-
         data = await self._request(
             "GET",
             url,
-            headers=headers,
             params={"accountType": "UNIFIED"}
         )
 
@@ -218,6 +168,115 @@ class BybitREST:
                 return float(c["walletBalance"])
 
         return 0.0
+
+    # ==========================================================
+    # MARKET BUY
+    # ==========================================================
+
+    async def market_buy_quote(
+        self,
+        symbol: str,
+        quote_amount: float,
+    ) -> Dict[str, Any]:
+
+        url = f"{self.BASE_URL}/v5/order/create"
+
+        body = {
+            "category": "spot",
+            "symbol": symbol,
+            "side": "Buy",
+            "orderType": "Market",
+            "qty": str(quote_amount),
+            "marketUnit": "quoteCoin",
+        }
+
+        data = await self._request(
+            "POST",
+            url,
+            json=body
+        )
+
+        result = data["result"]
+
+        return {
+            "qty": float(result.get("qty", 0)),
+            "avg_price": float(result.get("avgPrice", 0)),
+            "status": result.get("orderStatus")
+        }
+
+    # ==========================================================
+    # MARKET SELL
+    # ==========================================================
+
+    async def market_sell_base(
+        self,
+        symbol: str,
+        qty: float
+    ):
+
+        url = f"{self.BASE_URL}/v5/order/create"
+
+        body = {
+            "category": "spot",
+            "symbol": symbol,
+            "side": "Sell",
+            "orderType": "Market",
+            "qty": str(qty),
+        }
+
+        return await self._request(
+            "POST",
+            url,
+            json=body
+        )
+
+    # ==========================================================
+    # LIMIT SELL
+    # ==========================================================
+
+    async def limit_sell_base(
+        self,
+        symbol: str,
+        qty: float,
+        price: float
+    ):
+
+        url = f"{self.BASE_URL}/v5/order/create"
+
+        body = {
+            "category": "spot",
+            "symbol": symbol,
+            "side": "Sell",
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(price),
+            "timeInForce": "GTC",
+        }
+
+        return await self._request(
+            "POST",
+            url,
+            json=body
+        )
+
+    # ==========================================================
+    # CANCEL ALL
+    # ==========================================================
+
+    async def cancel_all(self, symbol: str):
+
+        url = f"{self.BASE_URL}/v5/order/cancel-all"
+
+        body = {
+            "category": "spot",
+            "symbol": symbol
+        }
+
+        return await self._request(
+            "POST",
+            url,
+            json=body
+        )
 
 
 BybitSpot = BybitREST
