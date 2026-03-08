@@ -32,15 +32,15 @@ class BybitWS:
         self.ws_url = ws_url
         self._stop = asyncio.Event()
 
-        # last candle guard
+        # duplicate candle guard
         self._last_candle: Dict[str, int] = {}
 
     def stop(self) -> None:
         self._stop.set()
 
-    # =========================================================
+    # =====================================================
     # MAIN STREAM
-    # =========================================================
+    # =====================================================
 
     async def stream_klines(
         self,
@@ -48,7 +48,7 @@ class BybitWS:
         timeframe: str
     ) -> AsyncIterator[KlineMsg]:
 
-        # timeframe normalization
+        # timeframe normalize
         if timeframe.endswith("m"):
             interval = timeframe[:-1]
 
@@ -56,7 +56,7 @@ class BybitWS:
             interval = str(int(timeframe[:-1]) * 60)
 
         else:
-            raise ValueError("Unsupported timeframe")
+            raise ValueError(f"Unsupported timeframe {timeframe}")
 
         topics = [f"kline.{interval}.{s}" for s in symbols]
 
@@ -83,42 +83,30 @@ class BybitWS:
 
                 async with websockets.connect(
                     self.ws_url,
-                    ping_interval=15,
-                    ping_timeout=15,
+                    ping_interval=20,
+                    ping_timeout=20,
                     close_timeout=5,
-                    max_size=10_000_000,
+                    max_size=5_000_000,
                 ) as ws:
 
                     log.info("BYBIT_WS_CONNECTED")
 
-                    # subscribe
                     await ws.send(json.dumps(subscribe_msg))
                     log.info("BYBIT_WS_SUBSCRIBE_SENT")
 
-                    # confirm subscription
-                    try:
-
-                        first = await asyncio.wait_for(ws.recv(), timeout=10)
-
-                        log.info(
-                            "BYBIT_WS_FIRST_MESSAGE",
-                            extra={"payload": first}
-                        )
-
-                    except asyncio.TimeoutError:
-
-                        log.warning("BYBIT_WS_SUB_CONFIRM_TIMEOUT")
-
                     backoff = 1.0
 
-                    # ===============================
-                    # SAFE RECEIVE LOOP
-                    # ===============================
+                    # ============================
+                    # RECEIVE LOOP
+                    # ============================
 
                     while not self._stop.is_set():
 
                         try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+                            raw = await asyncio.wait_for(
+                                ws.recv(),
+                                timeout=30
+                            )
 
                         except asyncio.TimeoutError:
 
@@ -126,18 +114,19 @@ class BybitWS:
 
                             try:
                                 await ws.ping()
+                                continue
                             except Exception:
                                 log.warning("BYBIT_WS_PING_FAILED")
                                 break
 
-                            continue
+                        except websockets.ConnectionClosed:
 
-                        if self._stop.is_set():
+                            log.warning("BYBIT_WS_CONNECTION_CLOSED")
                             break
 
-                        # -------------------------
-                        # SAFE JSON PARSE
-                        # -------------------------
+                        # --------------------------
+                        # JSON PARSE
+                        # --------------------------
 
                         try:
                             data = json.loads(raw)
@@ -150,16 +139,11 @@ class BybitWS:
                             )
                             continue
 
-                        # -------------------------
-                        # SUBSCRIBE ERRORS
-                        # -------------------------
+                        # --------------------------
+                        # SUBSCRIBE RESPONSE
+                        # --------------------------
 
-                        if "success" in data and not data.get("success", True):
-
-                            log.error(
-                                "BYBIT_WS_SUBSCRIBE_ERROR",
-                                extra={"data": data}
-                            )
+                        if "success" in data and "op" in data:
                             continue
 
                         topic = data.get("topic")
@@ -172,10 +156,7 @@ class BybitWS:
 
                         payload = data.get("data")
 
-                        if not payload:
-                            continue
-
-                        if not isinstance(payload, list):
+                        if not payload or not isinstance(payload, list):
                             continue
 
                         item = payload[-1]
@@ -189,9 +170,8 @@ class BybitWS:
 
                         try:
 
-                            start = int(item.get("start"))
+                            start = int(item["start"])
 
-                            # duplicate candle guard
                             last = self._last_candle.get(symbol)
 
                             if last == start:
@@ -203,13 +183,13 @@ class BybitWS:
                                 symbol=symbol,
                                 timeframe=timeframe,
                                 is_closed=bool(item.get("confirm", False)),
-                                open=float(item.get("open")),
-                                high=float(item.get("high")),
-                                low=float(item.get("low")),
-                                close=float(item.get("close")),
-                                volume=float(item.get("volume")),
+                                open=float(item["open"]),
+                                high=float(item["high"]),
+                                low=float(item["low"]),
+                                close=float(item["close"]),
+                                volume=float(item["volume"]),
                                 start_ms=start,
-                                end_ms=int(item.get("end")),
+                                end_ms=int(item["end"]),
                             )
 
                         except Exception as e:
