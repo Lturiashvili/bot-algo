@@ -50,7 +50,7 @@ class BybitWS:
 
         # timeframe normalize
         if timeframe.endswith("m"):
-            interval = timeframe
+            interval = timeframe[:-1]
 
         elif timeframe.endswith("h"):
             interval = str(int(timeframe[:-1]) * 60)
