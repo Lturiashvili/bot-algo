@@ -193,13 +193,12 @@ for module_name, class_name in CLASS_TESTS:
                     partial_tp_pct=s.PARTIAL_TP_PCT,
                )
 
-           else:
-               obj = cls()
-           logger.info(f"✅ {class_name} instance OK")
-        else:
-            logger.warning(f"{class_name} not found in {module_name}")
+    else:
+         obj = cls()
+         logger.info(f"✅ {class_name} instance OK")
+   
     except Exception as e:
-        logger.warning(f"{class_name} failed → {e}")
+         logger.warning(f"{class_name} failed → {e}")
 
 logger.info("═" * 80)
 logger.info("ASYNCIO LOOP TEST")
