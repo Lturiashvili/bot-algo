@@ -32,7 +32,7 @@ class BybitWS:
         self.ws_url = ws_url
         self._stop = asyncio.Event()
 
-        # last candle guard (duplicate protection)
+        # last candle guard
         self._last_candle: Dict[str, int] = {}
 
     def stop(self) -> None:
@@ -111,37 +111,44 @@ class BybitWS:
 
                     backoff = 1.0
 
+                    # ===============================
+                    # SAFE RECEIVE LOOP
+                    # ===============================
+
                     while not self._stop.is_set():
 
-    try:
-        raw = await asyncio.wait_for(ws.recv(), timeout=30)
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=30)
 
-    except asyncio.TimeoutError:
+                        except asyncio.TimeoutError:
 
-        log.warning("BYBIT_WS_TIMEOUT_NO_DATA")
+                            log.warning("BYBIT_WS_TIMEOUT_NO_DATA")
 
-        try:
-            await ws.ping()
-        except Exception:
-            log.warning("BYBIT_WS_PING_FAILED")
-            break
+                            try:
+                                await ws.ping()
+                            except Exception:
+                                log.warning("BYBIT_WS_PING_FAILED")
+                                break
 
-        continue
+                            continue
 
-    if self._stop.is_set():
-        break
+                        if self._stop.is_set():
+                            break
 
-    # SAFE JSON PARSE
-    try:
-        data = json.loads(raw)
+                        # -------------------------
+                        # SAFE JSON PARSE
+                        # -------------------------
 
-    except Exception:
+                        try:
+                            data = json.loads(raw)
 
-        log.warning(
-            "BYBIT_WS_JSON_ERROR",
-            extra={"raw": raw[:200]}
-        )
-        continue
+                        except Exception:
+
+                            log.warning(
+                                "BYBIT_WS_JSON_ERROR",
+                                extra={"raw": raw[:200]}
+                            )
+                            continue
 
                         # -------------------------
                         # SUBSCRIBE ERRORS
@@ -214,7 +221,6 @@ class BybitWS:
                                     "err": str(e)
                                 }
                             )
-
                             continue
 
                         yield msg
