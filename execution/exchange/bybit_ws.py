@@ -111,25 +111,37 @@ class BybitWS:
 
                     backoff = 1.0
 
-                    async for raw in ws:
+                    while not self._stop.is_set():
 
-                        if self._stop.is_set():
-                            break
+    try:
+        raw = await asyncio.wait_for(ws.recv(), timeout=30)
 
-                        # -------------------------
-                        # SAFE JSON PARSE
-                        # -------------------------
+    except asyncio.TimeoutError:
 
-                        try:
-                            data = json.loads(raw)
+        log.warning("BYBIT_WS_TIMEOUT_NO_DATA")
 
-                        except Exception:
+        try:
+            await ws.ping()
+        except Exception:
+            log.warning("BYBIT_WS_PING_FAILED")
+            break
 
-                            log.warning(
-                                "BYBIT_WS_JSON_ERROR",
-                                extra={"raw": raw[:200]}
-                            )
-                            continue
+        continue
+
+    if self._stop.is_set():
+        break
+
+    # SAFE JSON PARSE
+    try:
+        data = json.loads(raw)
+
+    except Exception:
+
+        log.warning(
+            "BYBIT_WS_JSON_ERROR",
+            extra={"raw": raw[:200]}
+        )
+        continue
 
                         # -------------------------
                         # SUBSCRIBE ERRORS
