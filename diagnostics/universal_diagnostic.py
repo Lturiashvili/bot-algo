@@ -174,8 +174,28 @@ for module_name, class_name in CLASS_TESTS:
         mod = importlib.import_module(module_name)
         if hasattr(mod, class_name):
             cls = getattr(mod, class_name)
-            obj = cls()
-            logger.info(f"✅ {class_name} instance OK")
+
+            if class_name == "TradeDB":
+                from execution.config import Settings
+                s = Settings()
+                obj = cls(s.DB_PATH)
+
+            elif class_name == "RiskManager":
+                from execution.config import Settings
+                s = Settings()
+                obj = cls(
+                    position_pct=s.POSITION_PCT,
+                    stop_atr_mult=s.STOP_ATR_MULT,
+                    tp_atr_mult=s.TP_ATR_MULT,
+                    taker_fee=s.TAKER_FEE,
+                    maker_fee=s.MAKER_FEE,
+                    slippage_bps=s.SLIPPAGE_BPS,
+                    partial_tp_pct=s.PARTIAL_TP_PCT,
+               )
+
+           else:
+               obj = cls()
+           logger.info(f"✅ {class_name} instance OK")
         else:
             logger.warning(f"{class_name} not found in {module_name}")
     except Exception as e:
