@@ -9,6 +9,7 @@ import pandas as pd
 
 from execution.config import Settings
 from execution.database import TradeDB
+from execution.system_guardian import SystemGuardian
 from execution.exchange.base import TokenBucket
 from execution.exchange.binance_rest import BinanceSpot
 from execution.exchange.bybit_rest import BybitSpot
