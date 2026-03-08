@@ -45,6 +45,8 @@ class Engine:
         self.db = TradeDB(s.DB_PATH)
         self.portfolio = Portfolio()
 
+        self.guardian = SystemGuardian()
+
         self.risk = RiskManager(
             position_pct=s.POSITION_PCT,
             stop_atr_mult=s.STOP_ATR_MULT,
