@@ -262,8 +262,9 @@ class Engine:
 
                     if msg.symbol not in self._df15:
                            self._df15[msg.symbol] = pd.DataFrame(
-                               columns=["open","high","low","close","volume"]
-                           )
+                               columns=["open","high","low","close","volume"],
+                               dtype=float
+                    )
 
                     df = self._df15[msg.symbol]
 
@@ -275,7 +276,7 @@ class Engine:
                         "volume": msg.volume
                     }
 
-                    df.loc[_ms_to_dt(msg.ts)] = new_row
+                    df.loc[_ms_to_dt(msg.start_ms)] = new_row
 
                     if len(df) > MAX_CANDLES:
                         self._df15[msg.symbol] = df.iloc[-MAX_CANDLES:]
