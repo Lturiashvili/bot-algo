@@ -25,7 +25,7 @@ class KlineMsg:
     end_ms: int
 
 
-class BybitWS:
+self.ws = BybitWS()
 
     def __init__(self) -> None:
 
