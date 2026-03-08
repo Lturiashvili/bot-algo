@@ -269,6 +269,13 @@ class Engine:
         for sym in self.s.SYMBOLS:
             await self.seed_history(sym)
 
+        if not enabled("ws_stream"):
+            
+            log.warning("WS_STREAM_DISABLED")
+
+            while True:
+            await asyncio.sleep(3600)
+
         stream = self.ws.stream_klines(
             list(self.s.SYMBOLS),
             self.s.PRIMARY_TF
