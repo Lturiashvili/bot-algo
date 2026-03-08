@@ -254,9 +254,13 @@ class Engine:
             try:
 
                 async for msg in self.ws.stream_klines(
-                    list(self.s.SYMBOLS),
-                    self.s.PRIMARY_TF
+                        list(self.s.SYMBOLS),
+                        self.s.PRIMARY_TF
                 ):
+
+                    self.guardian.notify_ws_message()
+
+                    sym = msg.symbol
 
                     if not msg.is_closed:
                         continue
