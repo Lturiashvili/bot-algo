@@ -8,27 +8,43 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from execution.config import Settings
-from execution.database import TradeDB
-from execution.system_guardian import SystemGuardian
+from execution.module_switches import enabled
+
+# =========================================================
+# OPTIONAL IMPORTS
+# =========================================================
+
+if enabled("database"):
+    from execution.database import TradeDB
+
+if enabled("guardian"):
+    from execution.system_guardian import SystemGuardian
+
+if enabled("portfolio"):
+    from execution.portfolio import Portfolio
+
+if enabled("smart_router"):
+    from execution.smart_router import SmartRouter
+
+if enabled("trade_manager"):
+    from execution.trade_manager import TradeManager
+
+if enabled("ml"):
+    from execution.ml.signal_model import MLSignalFilter
+
+
+from execution.risk.manager import RiskManager
 from execution.exchange.base import TokenBucket
 from execution.exchange.binance_rest import BinanceSpot
 from execution.exchange.bybit_rest import BybitSpot
 from execution.exchange.binance_ws import BinanceWS
 from execution.exchange.bybit_ws import BybitWS
 
-from execution.portfolio import Portfolio
-from execution.risk.manager import RiskManager
-from execution.smart_router import SmartRouter
-from execution.trade_manager import TradeManager
-
-from execution.ml.signal_model import MLSignalFilter
 from execution.strategy.orderbook_alpha import compute_long_signal
-from ui.env_override import EnvOverrideBridge
 
 
-logging.basicConfig(level=Settings().LOG_LEVEL)
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("main")
-
 
 MAX_CANDLES = 2000
 
@@ -37,16 +53,50 @@ def _ms_to_dt(ms: int):
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
 
 
+# =========================================================
+# ENGINE
+# =========================================================
+
 class Engine:
 
     def __init__(self, s: Settings):
 
         self.s = s
-        self.db = TradeDB(s.DB_PATH)
-        self.portfolio = Portfolio()
 
-        # SYSTEM GUARDIAN
-        self.guardian = SystemGuardian()
+        # =============================
+        # OPTIONAL MODULES
+        # =============================
+
+        self.db = None
+        if enabled("database"):
+            self.db = TradeDB(s.DB_PATH)
+
+        self.guardian = None
+        if enabled("guardian"):
+            self.guardian = SystemGuardian()
+
+        self.portfolio = None
+        if enabled("portfolio"):
+            self.portfolio = Portfolio()
+
+        self.router = None
+        if enabled("smart_router"):
+            self.router = SmartRouter()
+
+        self.trade_manager = None
+        if enabled("trade_manager"):
+            self.trade_manager = TradeManager(self.router)
+
+        self.ml = None
+        if enabled("ml"):
+            self.ml = MLSignalFilter(
+                enabled=s.ML_ENABLED,
+                min_proba=s.ML_MIN_PROBA
+            )
+
+        # =============================
+        # RISK
+        # =============================
 
         self.risk = RiskManager(
             position_pct=s.POSITION_PCT,
@@ -58,22 +108,16 @@ class Engine:
             partial_tp_pct=s.PARTIAL_TP_PCT,
         )
 
-        self.ml = MLSignalFilter(
-            enabled=s.ML_ENABLED,
-            min_proba=s.ML_MIN_PROBA
-        )
-
-        self.router = SmartRouter()
-        self.trade_manager = TradeManager(self.router)
-
-        self.override = EnvOverrideBridge()
-
         self._df15: dict[str, pd.DataFrame] = {}
 
         limiter = TokenBucket(
             rate_per_sec=s.REST_RATE_PER_SEC,
             burst=s.REST_BURST
         )
+
+        # =============================
+        # EXCHANGE
+        # =============================
 
         if s.EXCHANGE == "binance":
 
@@ -127,6 +171,9 @@ class Engine:
 
     async def monitor_positions(self, symbol: str):
 
+        if not enabled("portfolio"):
+            return
+
         pos = self.portfolio.get(symbol)
 
         if not pos:
@@ -138,33 +185,19 @@ class Engine:
 
         if pos.tp_price and price >= pos.tp_price:
 
-            log.info("TP_HIT", extra={"symbol": symbol, "price": price})
-
-            await asyncio.wait_for(
-                self.trade_manager.close_position(
-                    self.ex,
-                    self.portfolio,
-                    symbol
-                ),
-                timeout=10
+            await self.trade_manager.close_position(
+                self.ex,
+                self.portfolio,
+                symbol
             )
-
-            return
 
         if pos.stop_price and price <= pos.stop_price:
 
-            log.warning("SL_HIT", extra={"symbol": symbol, "price": price})
-
-            await asyncio.wait_for(
-                self.trade_manager.close_position(
-                    self.ex,
-                    self.portfolio,
-                    symbol
-                ),
-                timeout=10
+            await self.trade_manager.close_position(
+                self.ex,
+                self.portfolio,
+                symbol
             )
-
-            return
 
     # =========================================================
     # BUY ENGINE
@@ -172,17 +205,12 @@ class Engine:
 
     async def maybe_open_position(self, symbol: str, idx: int):
 
-        if self.portfolio.has_position(symbol):
-            return
-
-        if self.portfolio.in_cooldown(symbol, idx):
-            return
-
         df15 = self._df15[symbol]
 
-        min_bars = max(self.s.EMA_SLOW + 5, 50)
+        if len(df15) < 50:
+            return
 
-        if len(df15) < min_bars:
+        if enabled("portfolio") and self.portfolio.has_position(symbol):
             return
 
         sig = compute_long_signal(
@@ -202,44 +230,29 @@ class Engine:
         if sig.action != "BUY":
             return
 
-        if self.s.ML_ENABLED and not self.ml.allow(sig.features):
+        if enabled("ml") and self.s.ML_ENABLED:
+
+            if not self.ml.allow(sig.features):
+                return
+
+        balance = await self.ex.get_balance("USDT")
+
+        price = float(df15["close"].iloc[-1])
+
+        size_usdt = self.risk.order_notional_usdt(balance)
+
+        if size_usdt < 5:
             return
 
-        try:
+        if enabled("trade_manager"):
 
-            balance = await asyncio.wait_for(
-                self.ex.get_balance("USDT"),
-                timeout=5
+            await self.trade_manager.open_long(
+                self.ex,
+                self.portfolio,
+                symbol,
+                size_usdt,
+                price
             )
-
-            if balance <= 0:
-                return
-
-            price = float(df15["close"].iloc[-1])
-
-            size_usdt = self.risk.order_notional_usdt(balance)
-
-            if size_usdt < 5:
-                return
-
-            await asyncio.wait_for(
-                self.trade_manager.open_long(
-                    self.ex,
-                    self.portfolio,
-                    symbol,
-                    size_usdt,
-                    price
-                ),
-                timeout=10
-            )
-
-        except asyncio.TimeoutError:
-
-            log.warning("EXECUTION_TIMEOUT", extra={"symbol": symbol})
-
-        except Exception as e:
-
-            log.exception(f"EXECUTION_ERROR {symbol} err={e}")
 
     # =========================================================
     # LIVE LOOP
@@ -247,75 +260,62 @@ class Engine:
 
     async def run_live(self):
 
-        # guardian background monitor
-        asyncio.create_task(self.guardian.start())
+        if enabled("guardian"):
+            asyncio.create_task(self.guardian.start())
 
-        await self.db.init()
+        if enabled("database"):
+            await self.db.init()
 
         for sym in self.s.SYMBOLS:
             await self.seed_history(sym)
 
-        while True:
+        stream = self.ws.stream_klines(
+            list(self.s.SYMBOLS),
+            self.s.PRIMARY_TF
+        )
 
-            try:
+        async for msg in stream:
 
-                log.info("WS_STREAM_START")
+            if enabled("guardian"):
+                self.guardian.notify_ws_message()
 
-                stream = self.ws.stream_klines(
-                    list(self.s.SYMBOLS),
-                    self.s.PRIMARY_TF
+            if msg is None:
+                continue
+
+            sym = msg.symbol
+
+            if not msg.is_closed:
+                continue
+
+            if sym not in self._df15:
+
+                self._df15[sym] = pd.DataFrame(
+                    columns=["open","high","low","close","volume"],
+                    dtype=float
                 )
 
-                async for msg in stream:
+            df = self._df15[sym]
 
-                    self.guardian.notify_ws_message()
+            df.loc[_ms_to_dt(msg.start_ms)] = {
+                "open": msg.open,
+                "high": msg.high,
+                "low": msg.low,
+                "close": msg.close,
+                "volume": msg.volume
+            }
 
-                    if msg is None:
-                        log.warning("WS_EMPTY_MESSAGE")
-                        continue
+            if len(df) > MAX_CANDLES:
+                self._df15[sym] = df.iloc[-MAX_CANDLES:]
 
-                    sym = msg.symbol
+            idx = len(df)
 
-                    if not msg.is_closed:
-                        continue
+            await self.monitor_positions(sym)
+            await self.maybe_open_position(sym, idx)
 
-                    if sym not in self._df15:
 
-                        self._df15[sym] = pd.DataFrame(
-                            columns=["open","high","low","close","volume"],
-                            dtype=float
-                        )
-
-                    df = self._df15[sym]
-
-                    new_row = {
-                        "open": msg.open,
-                        "high": msg.high,
-                        "low": msg.low,
-                        "close": msg.close,
-                        "volume": msg.volume
-                    }
-
-                    df.loc[_ms_to_dt(msg.start_ms)] = new_row
-
-                    if len(df) > MAX_CANDLES:
-                        self._df15[sym] = df.iloc[-MAX_CANDLES:]
-
-                    idx = len(df)
-
-                    await self.monitor_positions(sym)
-
-                    await self.maybe_open_position(
-                        sym,
-                        idx
-                    )
-
-            except Exception:
-
-                log.exception("MAIN_LOOP_EXCEPTION")
-
-                await asyncio.sleep(3)
-
+# =========================================================
+# MAIN
+# =========================================================
 
 async def main():
 
