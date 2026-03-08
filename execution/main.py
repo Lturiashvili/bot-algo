@@ -282,7 +282,7 @@ class Engine:
                     }
 
                     df.loc[_ms_to_dt(msg.start_ms)] = new_row
-
+                    
                     if len(df) > MAX_CANDLES:
                         self._df15[msg.symbol] = df.iloc[-MAX_CANDLES:]
 
