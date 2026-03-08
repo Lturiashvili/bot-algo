@@ -156,14 +156,14 @@ class BybitWS:
 
                         payload = data.get("data")
 
-                        if not payload or not isinstance(payload, list):
+                        if not payload:
                             continue
 
-                        item = payload[-1]
+                        # normalize payload
+                        if isinstance(payload, dict):
+                            payload = [payload]
 
-                        parts = topic.split(".")
-
-                        if len(parts) < 3:
+                        if not isinstance(payload, list):
                             continue
 
                         symbol = parts[2]
