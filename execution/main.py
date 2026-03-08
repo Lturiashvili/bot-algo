@@ -295,12 +295,9 @@ class Engine:
                         idx
                     )
 
-            except Exception as e:
+            except Exception:
 
-                log.error(
-                    "MAIN_LOOP_EXCEPTION",
-                    extra={"err": str(e)}
-                )
+                log.exception("MAIN_LOOP_EXCEPTION")
 
                 await asyncio.sleep(2)
 
