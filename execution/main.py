@@ -264,7 +264,7 @@ class Engine:
                            self._df15[msg.symbol] = pd.DataFrame(
                                columns=["open","high","low","close","volume"],
                                dtype=float
-                    )
+                           )
 
                     df = self._df15[msg.symbol]
 
