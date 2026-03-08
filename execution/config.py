@@ -64,7 +64,7 @@ class Settings:
 
     # Bybit endpoints (V5 Spot)
     BYBIT_BASE_URL: str = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
-    BYBIT_WS_URL: str = os.getenv("BYBIT_WS_URL", BYBIT_WS_URL = wss://stream.bybit.com/v5/public/linear
+    BYBIT_WS_URL: str = os.getenv("BYBIT_WS_URL", "wss://stream.bybit.com/v5/public/linear")
     BYBIT_API_KEY: str = os.getenv("BYBIT_API_KEY", "")
     BYBIT_API_SECRET: str = os.getenv("BYBIT_API_SECRET", "")
 
