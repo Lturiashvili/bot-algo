@@ -45,6 +45,7 @@ class Engine:
         self.db = TradeDB(s.DB_PATH)
         self.portfolio = Portfolio()
 
+        # SYSTEM GUARDIAN
         self.guardian = SystemGuardian()
 
         self.risk = RiskManager(
@@ -246,6 +247,9 @@ class Engine:
 
     async def run_live(self):
 
+        # guardian background monitor
+        asyncio.create_task(self.guardian.start())
+
         await self.db.init()
 
         for sym in self.s.SYMBOLS:
@@ -255,25 +259,34 @@ class Engine:
 
             try:
 
-                async for msg in self.ws.stream_klines(
-                        list(self.s.SYMBOLS),
-                        self.s.PRIMARY_TF
-                ):
+                log.info("WS_STREAM_START")
+
+                stream = self.ws.stream_klines(
+                    list(self.s.SYMBOLS),
+                    self.s.PRIMARY_TF
+                )
+
+                async for msg in stream:
 
                     self.guardian.notify_ws_message()
+
+                    if msg is None:
+                        log.warning("WS_EMPTY_MESSAGE")
+                        continue
 
                     sym = msg.symbol
 
                     if not msg.is_closed:
                         continue
 
-                    if msg.symbol not in self._df15:
-                           self._df15[msg.symbol] = pd.DataFrame(
-                               columns=["open","high","low","close","volume"],
-                               dtype=float
-                           )
+                    if sym not in self._df15:
 
-                    df = self._df15[msg.symbol]
+                        self._df15[sym] = pd.DataFrame(
+                            columns=["open","high","low","close","volume"],
+                            dtype=float
+                        )
+
+                    df = self._df15[sym]
 
                     new_row = {
                         "open": msg.open,
@@ -284,16 +297,16 @@ class Engine:
                     }
 
                     df.loc[_ms_to_dt(msg.start_ms)] = new_row
-                    
+
                     if len(df) > MAX_CANDLES:
-                        self._df15[msg.symbol] = df.iloc[-MAX_CANDLES:]
+                        self._df15[sym] = df.iloc[-MAX_CANDLES:]
 
                     idx = len(df)
 
-                    await self.monitor_positions(msg.symbol)
+                    await self.monitor_positions(sym)
 
                     await self.maybe_open_position(
-                        msg.symbol,
+                        sym,
                         idx
                     )
 
@@ -301,7 +314,7 @@ class Engine:
 
                 log.exception("MAIN_LOOP_EXCEPTION")
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
 
 
 async def main():
