@@ -25,16 +25,15 @@ class KlineMsg:
     end_ms: int
 
 
-self.ws = BybitWS()
 
-    def __init__(self) -> None:
+class BybitWS:
 
-        self.ws_url = "wss://stream.bybit.com/v5/public/spot"
-        
+    def __init__(self, ws_url: str) -> None:
+        self.ws_url = ws_url
         self._stop = asyncio.Event()
+        self._last_candle = {}
 
-        # duplicate candle guard
-        self._last_candle: Dict[str, int] = {}
+
 
     def stop(self) -> None:
         self._stop.set()
