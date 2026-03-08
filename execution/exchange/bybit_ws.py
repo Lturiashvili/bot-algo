@@ -4,16 +4,12 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import AsyncIterator, Dict, List
+from typing import AsyncIterator, Dict
 
 import websockets
 
 log = logging.getLogger("bybit_ws")
 
-
-# =========================================================
-# DATA MODEL
-# =========================================================
 
 @dataclass(frozen=True)
 class KlineMsg:
@@ -29,10 +25,6 @@ class KlineMsg:
     end_ms: int
 
 
-# =========================================================
-# WEBSOCKET CLIENT
-# =========================================================
-
 class BybitWS:
 
     def __init__(self, ws_url: str) -> None:
@@ -40,8 +32,8 @@ class BybitWS:
         self.ws_url = ws_url
         self._stop = asyncio.Event()
 
-        # guard for last CLOSED candle per symbol
-        self._last_closed: Dict[str, int] = {}
+        # last candle guard (duplicate protection)
+        self._last_candle: Dict[str, int] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -52,14 +44,11 @@ class BybitWS:
 
     async def stream_klines(
         self,
-        symbols: List[str],
+        symbols: list[str],
         timeframe: str
     ) -> AsyncIterator[KlineMsg]:
 
-        # -----------------------------
         # timeframe normalization
-        # -----------------------------
-
         if timeframe.endswith("m"):
             interval = timeframe[:-1]
 
@@ -67,7 +56,7 @@ class BybitWS:
             interval = str(int(timeframe[:-1]) * 60)
 
         else:
-            raise ValueError(f"Unsupported timeframe: {timeframe}")
+            raise ValueError("Unsupported timeframe")
 
         topics = [f"kline.{interval}.{s}" for s in symbols]
 
@@ -78,7 +67,10 @@ class BybitWS:
 
         log.info(
             "BYBIT_WS_INIT",
-            extra={"url": self.ws_url, "topics": topics}
+            extra={
+                "url": self.ws_url,
+                "topics": topics
+            }
         )
 
         backoff = 1.0
@@ -91,36 +83,26 @@ class BybitWS:
 
                 async with websockets.connect(
                     self.ws_url,
-                    ping_interval=20,
-                    ping_timeout=20,
-                    close_timeout=10,
+                    ping_interval=15,
+                    ping_timeout=15,
+                    close_timeout=5,
                     max_size=10_000_000,
                 ) as ws:
 
                     log.info("BYBIT_WS_CONNECTED")
 
-                    # -----------------------------
                     # subscribe
-                    # -----------------------------
-
                     await ws.send(json.dumps(subscribe_msg))
+                    log.info("BYBIT_WS_SUBSCRIBE_SENT")
 
-                    log.info(
-                        "BYBIT_WS_SUBSCRIBE_SENT",
-                        extra={"topics": topics}
-                    )
-
-                    # -----------------------------
-                    # first message
-                    # -----------------------------
-
+                    # confirm subscription
                     try:
 
                         first = await asyncio.wait_for(ws.recv(), timeout=10)
 
                         log.info(
                             "BYBIT_WS_FIRST_MESSAGE",
-                            extra={"payload": first[:300]}
+                            extra={"payload": first}
                         )
 
                     except asyncio.TimeoutError:
@@ -129,18 +111,14 @@ class BybitWS:
 
                     backoff = 1.0
 
-                    # =================================================
-                    # MESSAGE LOOP
-                    # =================================================
-
                     async for raw in ws:
 
                         if self._stop.is_set():
                             break
 
-                        # -----------------------------
-                        # JSON PARSE
-                        # -----------------------------
+                        # -------------------------
+                        # SAFE JSON PARSE
+                        # -------------------------
 
                         try:
                             data = json.loads(raw)
@@ -153,9 +131,17 @@ class BybitWS:
                             )
                             continue
 
-                        # -----------------------------
-                        # filter system messages
-                        # -----------------------------
+                        # -------------------------
+                        # SUBSCRIBE ERRORS
+                        # -------------------------
+
+                        if "success" in data and not data.get("success", True):
+
+                            log.error(
+                                "BYBIT_WS_SUBSCRIBE_ERROR",
+                                extra={"data": data}
+                            )
+                            continue
 
                         topic = data.get("topic")
 
@@ -167,7 +153,10 @@ class BybitWS:
 
                         payload = data.get("data")
 
-                        if not payload or not isinstance(payload, list):
+                        if not payload:
+                            continue
+
+                        if not isinstance(payload, list):
                             continue
 
                         item = payload[-1]
@@ -179,61 +168,42 @@ class BybitWS:
 
                         symbol = parts[2]
 
-                        # -----------------------------
-                        # SAFE PARSE
-                        # -----------------------------
-
                         try:
 
-                            start = int(item["start"])
-                            end = int(item["end"])
+                            start = int(item.get("start"))
 
-                            open_p = float(item["open"])
-                            high_p = float(item["high"])
-                            low_p = float(item["low"])
-                            close_p = float(item["close"])
-                            volume = float(item["volume"])
+                            # duplicate candle guard
+                            last = self._last_candle.get(symbol)
 
-                            closed = bool(item.get("confirm", False))
+                            if last == start:
+                                continue
+
+                            self._last_candle[symbol] = start
+
+                            msg = KlineMsg(
+                                symbol=symbol,
+                                timeframe=timeframe,
+                                is_closed=bool(item.get("confirm", False)),
+                                open=float(item.get("open")),
+                                high=float(item.get("high")),
+                                low=float(item.get("low")),
+                                close=float(item.get("close")),
+                                volume=float(item.get("volume")),
+                                start_ms=start,
+                                end_ms=int(item.get("end")),
+                            )
 
                         except Exception as e:
 
                             log.warning(
                                 "BYBIT_WS_PARSE_ERROR",
-                                extra={"symbol": symbol, "err": str(e)}
+                                extra={
+                                    "symbol": symbol,
+                                    "err": str(e)
+                                }
                             )
 
                             continue
-
-                        # -----------------------------
-                        # DUPLICATE CLOSED CANDLE GUARD
-                        # -----------------------------
-
-                        if closed:
-
-                            last = self._last_closed.get(symbol)
-
-                            if last == start:
-                                continue
-
-                            self._last_closed[symbol] = start
-
-                        # -----------------------------
-                        # BUILD MESSAGE
-                        # -----------------------------
-
-                        msg = KlineMsg(
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            is_closed=closed,
-                            open=open_p,
-                            high=high_p,
-                            low=low_p,
-                            close=close_p,
-                            volume=volume,
-                            start_ms=start,
-                            end_ms=end,
-                        )
 
                         yield msg
 
