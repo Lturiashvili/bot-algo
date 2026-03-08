@@ -27,9 +27,10 @@ class KlineMsg:
 
 class BybitWS:
 
-    def __init__(self, ws_url: str) -> None:
+    def __init__(self) -> None:
 
-        self.ws_url = ws_url
+        self.ws_url = "wss://stream.bybit.com/v5/public/spot"
+        
         self._stop = asyncio.Event()
 
         # duplicate candle guard
