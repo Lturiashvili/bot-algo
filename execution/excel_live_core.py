@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 
 @dataclass
 class CoreInputs:
+
     trend_strength: float
     structure_ok: bool
     volume_score: float
@@ -32,14 +33,16 @@ class ExcelLiveCore:
 
         self.excel_path = excel_path
 
+        # Excel sheets
         self.input_sheet = "PYTHON_BRIDGE"
-        self.output_sheet = "CONFIDENCE_PIPELINE"
+        self.output_sheet = "AI_OUTPUT"
 
+        # execution threshold
         self.execute_threshold = 0.6
 
 
     # -------------------------------------------------
-    # VOLATILITY MAPPING
+    # VOLATILITY REGIME MAPPING
     # -------------------------------------------------
 
     def _volatility_to_numeric(self, regime: str) -> int:
@@ -63,10 +66,10 @@ class ExcelLiveCore:
         ws = wb[self.input_sheet]
 
         values = {
-            "volatility_regime_input": self._volatility_to_numeric(inputs.volatility_regime),
+            "confidence_score_input": inputs.confidence_score,
             "volume_score_input": inputs.volume_score,
             "trend_strength_input": inputs.trend_strength,
-            "structure_ok_input": 1 if inputs.structure_ok else 0,
+            "volatility_regime_input": self._volatility_to_numeric(inputs.volatility_regime),
         }
 
         for row in ws.iter_rows(min_row=2):
@@ -80,7 +83,7 @@ class ExcelLiveCore:
 
 
     # -------------------------------------------------
-    # READ SCORE FROM EXCEL
+    # READ AI SCORE
     # -------------------------------------------------
 
     def _read_score(self) -> float:
@@ -88,7 +91,6 @@ class ExcelLiveCore:
         wb = load_workbook(self.excel_path, data_only=True)
         ws = wb[self.output_sheet]
 
-        # assume score in B2
         score = ws["B2"].value
 
         if score is None:
@@ -98,7 +100,7 @@ class ExcelLiveCore:
 
 
     # -------------------------------------------------
-    # DECISION
+    # FINAL DECISION
     # -------------------------------------------------
 
     def decide(self, inputs: CoreInputs) -> Dict[str, Any]:
