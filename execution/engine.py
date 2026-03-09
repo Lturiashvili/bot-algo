@@ -8,7 +8,8 @@ logger = logging.getLogger("gbm")
 
 class ExecutionEngine:
     """
-    Minimal production execution engine
+    Production execution engine for Bybit Spot trading.
+    Fully compatible with main.py worker.
     """
 
     def __init__(self):
@@ -25,20 +26,34 @@ class ExecutionEngine:
             f"ExecutionEngine initialized | MODE={self.mode}"
         )
 
-    # ------------------------------------------------
+    # -------------------------------------------------
     # EXECUTE SIGNAL
-    # ------------------------------------------------
+    # -------------------------------------------------
 
     def execute_signal(self, signal: dict):
 
         try:
 
-            logger.info(f"SIGNAL_RAW | {signal}")
+            logger.info(f"SIGNAL_RECEIVED | {signal}")
+
+            # -------------------------------------------------
+            # SYMBOL
+            # -------------------------------------------------
 
             symbol = (
                 signal.get("symbol")
                 or signal.get("execution", {}).get("symbol")
             )
+
+            if not symbol:
+
+                logger.warning("SIGNAL_REJECTED | missing symbol")
+
+                return
+
+            # -------------------------------------------------
+            # VERDICT
+            # -------------------------------------------------
 
             verdict = str(
                 signal.get("final_verdict")
@@ -46,17 +61,17 @@ class ExecutionEngine:
                 or ""
             ).upper()
 
-            if not symbol:
-
-                logger.warning("SIGNAL_REJECTED | missing symbol")
-                return
-
             if verdict not in ["BUY", "TRADE"]:
 
                 logger.info(
                     f"SIGNAL_SKIPPED | verdict={verdict}"
                 )
+
                 return
+
+            # -------------------------------------------------
+            # ORDER SIZE
+            # -------------------------------------------------
 
             quote_amount = (
                 signal.get("quote_amount")
@@ -67,21 +82,34 @@ class ExecutionEngine:
             quote_amount = float(quote_amount)
 
             logger.info(
-                f"EXECUTE_MARKET_BUY | symbol={symbol} quote={quote_amount}"
+                f"BYBIT_MARKET_BUY | symbol={symbol} quote={quote_amount}"
             )
+
+            # -------------------------------------------------
+            # PLACE ORDER
+            # -------------------------------------------------
 
             order = self.exchange.place_market_buy_by_quote(
                 symbol,
                 quote_amount
             )
 
+            # -------------------------------------------------
+            # ORDER ID SAFE PARSING
+            # -------------------------------------------------
+
             order_id = None
 
             if isinstance(order, dict):
-                order_id = order.get("id") or order.get("orderId")
+
+                order_id = (
+                    order.get("id")
+                    or order.get("orderId")
+                    or (order.get("info") or {}).get("orderId")
+                )
 
             logger.info(
-                f"ORDER_SUCCESS | symbol={symbol} id={order_id}"
+                f"ORDER_PLACED | symbol={symbol} order_id={order_id}"
             )
 
         except Exception as e:
