@@ -10,8 +10,10 @@ import ccxt
 from execution.signal_client import append_signal
 from execution.excel_live_core import ExcelLiveCore, CoreInputs
 
+
 logger = logging.getLogger("gbm")
 logger.setLevel(logging.INFO)
+
 
 # -------------------------------------------------
 # ENV CONFIG
@@ -20,7 +22,9 @@ logger.setLevel(logging.INFO)
 TIMEFRAME = os.getenv("BOT_TIMEFRAME", "15m")
 CANDLE_LIMIT = int(os.getenv("BOT_CANDLE_LIMIT", "80"))
 
-BOT_QUOTE_PER_TRADE = float(os.getenv("BOT_QUOTE_PER_TRADE", "15"))
+BOT_QUOTE_PER_TRADE = float(
+    os.getenv("BOT_QUOTE_PER_TRADE", "15")
+)
 
 COOLDOWN_SECONDS = int(
     os.getenv("BOT_SIGNAL_COOLDOWN_SECONDS", "180")
@@ -36,6 +40,7 @@ SYMBOLS = [
     if s.strip()
 ]
 
+
 EXCEL_MODEL_PATH = os.getenv(
     "EXCEL_MODEL_PATH",
     "/var/data/DYZEN_CAPITAL_OS_AI_LIVE_CORE_READY.xlsx"
@@ -46,17 +51,19 @@ OUTBOX_PATH = os.getenv(
     "/var/data/signal_outbox.json"
 )
 
+
 _last_emit_ts = 0
+_CORE: Optional[ExcelLiveCore] = None
+
 
 # -------------------------------------------------
-# EXCHANGE (BYBIT)
+# EXCHANGE
 # -------------------------------------------------
 
 EXCHANGE = ccxt.bybit({
     "enableRateLimit": True
 })
 
-_CORE: Optional[ExcelLiveCore] = None
 
 # -------------------------------------------------
 # UTIL
@@ -96,7 +103,7 @@ def _core() -> Optional[ExcelLiveCore]:
 
     global _CORE
 
-    if _CORE is not None:
+    if _CORE:
         return _CORE
 
     if not os.path.exists(EXCEL_MODEL_PATH):
@@ -130,22 +137,51 @@ def _sma(vals: List[float], n: int):
     return sum(vals[-n:]) / n
 
 
-def _confidence(closes: List[float]):
+# -------------------------------------------------
+# VOLATILITY REGIME
+# -------------------------------------------------
+
+def _volatility_regime(closes):
+
+    last = closes[-1]
+    prev = closes[-10]
+
+    change = abs(last - prev) / prev
+
+    if change < 0.01:
+        return "LOW"
+
+    if change < 0.03:
+        return "MEDIUM"
+
+    return "HIGH"
+
+
+# -------------------------------------------------
+# CONFIDENCE MODEL
+# -------------------------------------------------
+
+def _confidence(closes):
 
     last = closes[-1]
     prev = closes[-2]
 
     ma20 = _sma(closes, 20)
+    ma50 = _sma(closes, 50)
 
-    score = 0
+    score = 0.0
 
     if last > ma20:
-        score += 0.5
+        score += 0.4
+
+    if last > ma50:
+        score += 0.3
 
     if last > prev:
-        score += 0.5
+        score += 0.3
 
-    return score
+    return max(0, min(1, score))
+
 
 # -------------------------------------------------
 # SIGNAL ENGINE
@@ -182,9 +218,16 @@ def generate_signal() -> Optional[Dict[str, Any]]:
 
         ma20 = _sma(closes, 20)
 
-        trend_strength = max(0, min(1, (last - ma20) / ma20 + 0.5))
+        trend_strength = max(
+            0,
+            min(1, (last - ma20) / ma20 + 0.5)
+        )
 
-        conf = _confidence(closes)
+        confidence = _confidence(closes)
+
+        regime = _volatility_regime(closes)
+
+        volume_score = 0.6
 
         ai_execute = True
 
@@ -195,10 +238,10 @@ def generate_signal() -> Optional[Dict[str, Any]]:
                 inputs = CoreInputs(
                     trend_strength=trend_strength,
                     structure_ok=(last > ma20),
-                    volume_score=0.5,
+                    volume_score=volume_score,
                     risk_state="OK",
-                    confidence_score=conf,
-                    volatility_regime="NORMAL",
+                    confidence_score=confidence,
+                    volatility_regime=regime,
                 )
 
                 decision = core.decide(inputs)
@@ -207,7 +250,9 @@ def generate_signal() -> Optional[Dict[str, Any]]:
                     f"AI_DECISION | {symbol} | score={decision.get('ai_score')} | final={decision.get('final_trade_decision')}"
                 )
 
-                ai_execute = decision.get("final_trade_decision") == "EXECUTE"
+                ai_execute = (
+                    decision.get("final_trade_decision") == "EXECUTE"
+                )
 
             except Exception as e:
 
@@ -222,41 +267,28 @@ def generate_signal() -> Optional[Dict[str, Any]]:
         signal = {
 
             "schema_version": "1.0",
-
             "signal_id": signal_id,
-
             "strategy_id": "DYZEN_AI_V1",
-
             "ts_utc": _now(),
-
             "certified_signal": True,
-
             "final_verdict": "TRADE",
 
             "meta": {
-
                 "source": "DYZEN_EXCEL_LIVE_CORE",
-
                 "symbol": symbol
-
             },
 
             "execution": {
 
                 "symbol": symbol,
-
                 "direction": "LONG",
 
                 "entry": {
-
                     "type": "MARKET"
-
                 },
 
                 "quote_amount": BOT_QUOTE_PER_TRADE
-
             }
-
         }
 
         if ALLOW_LIVE_SIGNALS:
@@ -270,6 +302,7 @@ def generate_signal() -> Optional[Dict[str, Any]]:
         return signal
 
     return None
+
 
 # -------------------------------------------------
 # ENTRYPOINT
