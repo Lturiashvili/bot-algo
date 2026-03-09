@@ -5,7 +5,7 @@ import time
 import logging
 import traceback
 
-from execution.execution_engine import ExecutionEngine
+from execution.engine import ExecutionEngine
 from execution.signal_client import pop_next_signal
 
 
@@ -31,7 +31,7 @@ LOG_LEVEL = os.getenv(
 
 
 # --------------------------------------------------
-# LOGGING SETUP
+# LOGGING
 # --------------------------------------------------
 
 logging.basicConfig(
@@ -43,7 +43,7 @@ logger = logging.getLogger("gbm")
 
 
 # --------------------------------------------------
-# BOOT INFO
+# BOOT BANNER
 # --------------------------------------------------
 
 def print_boot_banner():
@@ -70,10 +70,6 @@ def worker_loop():
 
         try:
 
-            # ----------------------------------
-            # GET NEXT SIGNAL
-            # ----------------------------------
-
             signal = pop_next_signal(SIGNAL_OUTBOX_PATH)
 
             if signal:
@@ -94,18 +90,14 @@ def worker_loop():
         except Exception as e:
 
             logger.error("WORKER_EXCEPTION")
-
             logger.error(str(e))
-
             traceback.print_exc()
 
-        finally:
-
-            time.sleep(LOOP_SLEEP_SECONDS)
+        time.sleep(LOOP_SLEEP_SECONDS)
 
 
 # --------------------------------------------------
-# ENTRYPOINT
+# ENTRY POINT
 # --------------------------------------------------
 
 def main():
@@ -123,9 +115,7 @@ def main():
     except Exception as e:
 
         logger.error("FATAL_ERROR")
-
         logger.error(str(e))
-
         traceback.print_exc()
 
 
