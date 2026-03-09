@@ -27,7 +27,7 @@ class ExcelLiveCore:
     def __init__(self, model_path: str = None):
 
         # აღარ ვიყენებთ Excel-ს
-        self.execute_threshold = 0.6
+        self.execute_threshold = 0.4
 
 
     # -------------------------------------------------
