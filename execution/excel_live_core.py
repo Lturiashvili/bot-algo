@@ -27,7 +27,7 @@ class ExcelLiveCore:
     def __init__(self, model_path: str = None):
 
         # Execute threshold (lowered for live testing)
-        self.execute_threshold = 0.3
+        self.execute_threshold = 0.35
 
 
     # -------------------------------------------------
