@@ -2,8 +2,6 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Any
 
-from openpyxl import load_workbook
-
 
 # -------------------------------------------------
 # INPUT STRUCTURE
@@ -21,23 +19,14 @@ class CoreInputs:
 
 
 # -------------------------------------------------
-# EXCEL AI CORE
+# AI CORE ENGINE
 # -------------------------------------------------
 
 class ExcelLiveCore:
 
-    def __init__(self, excel_path: str):
+    def __init__(self, model_path: str = None):
 
-        if not os.path.exists(excel_path):
-            raise FileNotFoundError(excel_path)
-
-        self.excel_path = excel_path
-
-        # Excel sheets
-        self.input_sheet = "PYTHON_BRIDGE"
-        self.output_sheet = "AI_OUTPUT"
-
-        # AI execution threshold
+        # აღარ ვიყენებთ Excel-ს
         self.execute_threshold = 0.6
 
 
@@ -57,70 +46,57 @@ class ExcelLiveCore:
 
 
     # -------------------------------------------------
-    # WRITE INPUTS TO EXCEL
+    # AI SCORE CALCULATION
     # -------------------------------------------------
 
-    def _write_inputs(self, inputs: CoreInputs):
+    def _calculate_score(self, inputs: CoreInputs) -> float:
 
-        wb = load_workbook(self.excel_path)
+        # -----------------------------
+        # CONF BASE
+        # -----------------------------
 
-        ws = wb[self.input_sheet]
+        conf_base = (
+            inputs.confidence_score * 0.4
+            + inputs.volume_score * 0.3
+            + inputs.trend_strength * 0.3
+        )
 
-        values = {
-            "confidence_score_input": inputs.confidence_score,
-            "volume_score_input": inputs.volume_score,
-            "trend_strength_input": inputs.trend_strength,
-            "volatility_regime_input": self._volatility_to_numeric(inputs.volatility_regime),
-        }
+        # -----------------------------
+        # HEALTH
+        # -----------------------------
 
-        for row in ws.iter_rows(min_row=2):
+        health = 1.0 if inputs.volume_score > 0.4 else 0.7
 
-            field = row[0].value
+        # -----------------------------
+        # RISK
+        # -----------------------------
 
-            if field in values:
-                row[1].value = values[field]
+        risk = 1.0 if inputs.structure_ok else 0.6
 
-        # ---------------------------------------------
-        # FORCE EXCEL RECALCULATION
-        # ---------------------------------------------
+        # -----------------------------
+        # VOLATILITY REGIME
+        # -----------------------------
 
-        wb.calculation.fullCalcOnLoad = True
+        regime_num = self._volatility_to_numeric(inputs.volatility_regime)
 
-        wb.save(self.excel_path)
+        regime_adj = 1 + regime_num * 0.2
 
+        # -----------------------------
+        # FINAL SCORE
+        # -----------------------------
 
-    # -------------------------------------------------
-    # READ AI SCORE
-    # -------------------------------------------------
+        ai_score = conf_base * health * risk * regime_adj
 
-    def _read_score(self) -> float:
-
-        wb = load_workbook(self.excel_path, data_only=True)
-
-        ws = wb[self.output_sheet]
-
-        score = ws["B2"].value
-
-        if score is None:
-            return 0.0
-
-        try:
-            return round(float(score), 4)
-        except:
-            return 0.0
+        return round(ai_score, 4)
 
 
     # -------------------------------------------------
-    # FINAL DECISION
+    # DECISION
     # -------------------------------------------------
 
     def decide(self, inputs: CoreInputs) -> Dict[str, Any]:
 
-        # write inputs to excel
-        self._write_inputs(inputs)
-
-        # read calculated score
-        ai_score = self._read_score()
+        ai_score = self._calculate_score(inputs)
 
         decision = "EXECUTE" if ai_score >= self.execute_threshold else "BLOCK"
 
