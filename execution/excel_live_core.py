@@ -37,7 +37,7 @@ class ExcelLiveCore:
         self.input_sheet = "PYTHON_BRIDGE"
         self.output_sheet = "AI_OUTPUT"
 
-        # execution threshold
+        # AI execution threshold
         self.execute_threshold = 0.6
 
 
@@ -63,6 +63,7 @@ class ExcelLiveCore:
     def _write_inputs(self, inputs: CoreInputs):
 
         wb = load_workbook(self.excel_path)
+
         ws = wb[self.input_sheet]
 
         values = {
@@ -79,6 +80,12 @@ class ExcelLiveCore:
             if field in values:
                 row[1].value = values[field]
 
+        # ---------------------------------------------
+        # FORCE EXCEL RECALCULATION
+        # ---------------------------------------------
+
+        wb.calculation.fullCalcOnLoad = True
+
         wb.save(self.excel_path)
 
 
@@ -89,6 +96,7 @@ class ExcelLiveCore:
     def _read_score(self) -> float:
 
         wb = load_workbook(self.excel_path, data_only=True)
+
         ws = wb[self.output_sheet]
 
         score = ws["B2"].value
@@ -96,7 +104,10 @@ class ExcelLiveCore:
         if score is None:
             return 0.0
 
-        return round(float(score), 4)
+        try:
+            return round(float(score), 4)
+        except:
+            return 0.0
 
 
     # -------------------------------------------------
@@ -105,8 +116,10 @@ class ExcelLiveCore:
 
     def decide(self, inputs: CoreInputs) -> Dict[str, Any]:
 
+        # write inputs to excel
         self._write_inputs(inputs)
 
+        # read calculated score
         ai_score = self._read_score()
 
         decision = "EXECUTE" if ai_score >= self.execute_threshold else "BLOCK"
