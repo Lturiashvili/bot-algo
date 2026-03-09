@@ -1,5 +1,3 @@
-# execution/signal_generator.py
-
 import os
 import time
 import uuid
@@ -13,6 +11,7 @@ from execution.signal_client import append_signal
 from execution.excel_live_core import ExcelLiveCore, CoreInputs
 
 logger = logging.getLogger("gbm")
+logger.setLevel(logging.INFO)
 
 # -------------------------------------------------
 # ENV CONFIG
@@ -28,10 +27,7 @@ COOLDOWN_SECONDS = int(
 )
 
 ALLOW_LIVE_SIGNALS = (
-    os.getenv("ALLOW_LIVE_SIGNALS", "false")
-    .strip()
-    .lower()
-    == "true"
+    os.getenv("ALLOW_LIVE_SIGNALS", "true").lower() == "true"
 )
 
 SYMBOLS = [
@@ -53,15 +49,14 @@ OUTBOX_PATH = os.getenv(
 _last_emit_ts = 0
 
 # -------------------------------------------------
-# EXCHANGE
+# EXCHANGE (BYBIT)
 # -------------------------------------------------
 
-EXCHANGE = ccxt.binance({
+EXCHANGE = ccxt.bybit({
     "enableRateLimit": True
 })
 
 _CORE: Optional[ExcelLiveCore] = None
-
 
 # -------------------------------------------------
 # UTIL
@@ -72,7 +67,9 @@ def _now():
 
 
 def _cooldown_ok():
+
     global _last_emit_ts
+
     return (time.time() - _last_emit_ts) >= COOLDOWN_SECONDS
 
 
@@ -80,38 +77,52 @@ def _emit(signal: Dict[str, Any]):
 
     global _last_emit_ts
 
-    append_signal(signal, OUTBOX_PATH)
+    try:
 
-    _last_emit_ts = time.time()
+        append_signal(signal, OUTBOX_PATH)
 
-    logger.info(
-        f"SIGNAL_EMITTED | id={signal.get('signal_id')} "
-        f"symbol={signal['execution']['symbol']}"
-    )
+        _last_emit_ts = time.time()
+
+        logger.info(
+            f"SIGNAL_EMITTED | {signal['execution']['symbol']} | {signal['signal_id']}"
+        )
+
+    except Exception as e:
+
+        logger.error(f"SIGNAL_WRITE_FAILED | {e}")
 
 
-def _core() -> ExcelLiveCore:
+def _core() -> Optional[ExcelLiveCore]:
 
     global _CORE
 
-    if _CORE is None:
+    if _CORE is not None:
+        return _CORE
 
-        if not os.path.exists(EXCEL_MODEL_PATH):
+    if not os.path.exists(EXCEL_MODEL_PATH):
 
-            raise FileNotFoundError(
-                f"Excel model not found: {EXCEL_MODEL_PATH}"
-            )
+        logger.warning(
+            f"EXCEL_MODEL_NOT_FOUND | fallback mode | {EXCEL_MODEL_PATH}"
+        )
+
+        return None
+
+    try:
 
         _CORE = ExcelLiveCore(EXCEL_MODEL_PATH)
 
-        logger.info(
-            f"EXCEL_CORE_LOADED | path={EXCEL_MODEL_PATH}"
-        )
+        logger.info(f"EXCEL_CORE_LOADED | {EXCEL_MODEL_PATH}")
 
-    return _CORE
+        return _CORE
+
+    except Exception as e:
+
+        logger.error(f"EXCEL_CORE_LOAD_FAIL | {e}")
+
+        return None
 
 
-def _sma(vals: List[float], n: int) -> float:
+def _sma(vals: List[float], n: int):
 
     if len(vals) < n:
         return sum(vals) / len(vals)
@@ -119,7 +130,7 @@ def _sma(vals: List[float], n: int) -> float:
     return sum(vals[-n:]) / n
 
 
-def _confidence(closes: List[float]) -> float:
+def _confidence(closes: List[float]):
 
     last = closes[-1]
     prev = closes[-2]
@@ -136,15 +147,13 @@ def _confidence(closes: List[float]) -> float:
 
     return score
 
-
 # -------------------------------------------------
-# MAIN SIGNAL LOGIC
+# SIGNAL ENGINE
 # -------------------------------------------------
 
 def generate_signal() -> Optional[Dict[str, Any]]:
 
     if not _cooldown_ok():
-
         return None
 
     core = _core()
@@ -161,14 +170,10 @@ def generate_signal() -> Optional[Dict[str, Any]]:
 
         except Exception as e:
 
-            logger.warning(
-                f"FETCH_FAIL | {symbol} | {e}"
-            )
-
+            logger.warning(f"FETCH_FAIL | {symbol} | {e}")
             continue
 
         if not ohlcv or len(ohlcv) < 30:
-
             continue
 
         closes = [c[4] for c in ohlcv]
@@ -177,46 +182,50 @@ def generate_signal() -> Optional[Dict[str, Any]]:
 
         ma20 = _sma(closes, 20)
 
-        trend_strength = (
-            max(0, min(1, (last - ma20) / ma20 + 0.5))
-        )
+        trend_strength = max(0, min(1, (last - ma20) / ma20 + 0.5))
 
         conf = _confidence(closes)
 
-        inputs = CoreInputs(
-            trend_strength=trend_strength,
-            structure_ok=(last > ma20),
-            volume_score=0.5,
-            risk_state="OK",
-            confidence_score=conf,
-            volatility_regime="NORMAL",
-        )
+        ai_execute = True
 
-        decision = core.decide(inputs)
+        if core:
 
-        logger.info(
-            f"CORE_DECISION | symbol={symbol} "
-            f"ai={decision.get('ai_score')} "
-            f"final={decision.get('final_trade_decision')}"
-        )
+            try:
 
-        if decision.get("final_trade_decision") != "EXECUTE":
+                inputs = CoreInputs(
+                    trend_strength=trend_strength,
+                    structure_ok=(last > ma20),
+                    volume_score=0.5,
+                    risk_state="OK",
+                    confidence_score=conf,
+                    volatility_regime="NORMAL",
+                )
 
-            continue
+                decision = core.decide(inputs)
 
-        if not ALLOW_LIVE_SIGNALS:
+                logger.info(
+                    f"AI_DECISION | {symbol} | score={decision.get('ai_score')} | final={decision.get('final_trade_decision')}"
+                )
 
-            logger.info(
-                "BLOCKED_BY_ENV | ALLOW_LIVE_SIGNALS=false"
-            )
+                ai_execute = decision.get("final_trade_decision") == "EXECUTE"
 
+            except Exception as e:
+
+                logger.error(f"EXCEL_CORE_ERROR | {e}")
+                continue
+
+        if not ai_execute:
             continue
 
         signal_id = str(uuid.uuid4())
 
         signal = {
 
+            "schema_version": "1.0",
+
             "signal_id": signal_id,
+
+            "strategy_id": "DYZEN_AI_V1",
 
             "ts_utc": _now(),
 
@@ -228,9 +237,7 @@ def generate_signal() -> Optional[Dict[str, Any]]:
 
                 "source": "DYZEN_EXCEL_LIVE_CORE",
 
-                "symbol": symbol,
-
-                "decision": decision,
+                "symbol": symbol
 
             },
 
@@ -246,21 +253,26 @@ def generate_signal() -> Optional[Dict[str, Any]]:
 
                 },
 
-                "quote_amount": BOT_QUOTE_PER_TRADE,
+                "quote_amount": BOT_QUOTE_PER_TRADE
 
             }
 
         }
 
-        _emit(signal)
+        if ALLOW_LIVE_SIGNALS:
+
+            _emit(signal)
+
+        else:
+
+            logger.info("SIGNAL_READY_BUT_ENV_BLOCKED")
 
         return signal
 
     return None
 
-
 # -------------------------------------------------
-# RENDER ENTRY
+# ENTRYPOINT
 # -------------------------------------------------
 
 def run_once():
@@ -270,6 +282,8 @@ def run_once():
 
 if __name__ == "__main__":
 
+    logger.info("SIGNAL_GENERATOR_STARTED")
+
     while True:
 
         try:
@@ -278,6 +292,6 @@ if __name__ == "__main__":
 
         except Exception as e:
 
-            logger.error(f"GENERATOR_ERROR | {e}")
+            logger.error(f"GENERATOR_CRASH | {e}")
 
         time.sleep(30)
