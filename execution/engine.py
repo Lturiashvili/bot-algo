@@ -1,4 +1,3 @@
-
 import os
 import logging
 
@@ -9,12 +8,7 @@ logger = logging.getLogger("gbm")
 
 class ExecutionEngine:
     """
-    Minimal production execution engine.
-
-    Responsibilities:
-    - receive signal
-    - validate signal
-    - execute market buy
+    Minimal production execution engine
     """
 
     def __init__(self):
@@ -31,13 +25,15 @@ class ExecutionEngine:
             f"ExecutionEngine initialized | MODE={self.mode}"
         )
 
-    # -------------------------------------------------
-    # SIGNAL EXECUTION
-    # -------------------------------------------------
+    # ------------------------------------------------
+    # EXECUTE SIGNAL
+    # ------------------------------------------------
 
     def execute_signal(self, signal: dict):
 
         try:
+
+            logger.info(f"SIGNAL_RAW | {signal}")
 
             symbol = (
                 signal.get("symbol")
@@ -79,10 +75,17 @@ class ExecutionEngine:
                 quote_amount
             )
 
+            order_id = None
+
+            if isinstance(order, dict):
+                order_id = order.get("id") or order.get("orderId")
+
             logger.info(
-                f"ORDER_SUCCESS | symbol={symbol} id={order.get('id')}"
+                f"ORDER_SUCCESS | symbol={symbol} id={order_id}"
             )
 
         except Exception as e:
 
-            logger.error(f"EXECUTION_ERROR | {str(e)}")
+            logger.error("EXECUTION_ERROR")
+
+            logger.error(str(e))
