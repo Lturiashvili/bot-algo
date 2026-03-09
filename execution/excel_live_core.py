@@ -1,13 +1,12 @@
-
 import os
 from dataclasses import dataclass
 from typing import Dict, Any
 
-import pandas as pd
+from openpyxl import load_workbook
 
 
 # -------------------------------------------------
-# INPUT STRUCTURE (used by signal_generator)
+# INPUT STRUCTURE
 # -------------------------------------------------
 
 @dataclass
@@ -32,78 +31,81 @@ class ExcelLiveCore:
             raise FileNotFoundError(excel_path)
 
         self.excel_path = excel_path
-        self.weights = self._load_weights()
 
-        # execution threshold
+        self.input_sheet = "PYTHON_BRIDGE"
+        self.output_sheet = "CONFIDENCE_PIPELINE"
+
         self.execute_threshold = 0.6
 
 
     # -------------------------------------------------
-    # LOAD WEIGHTS FROM EXCEL
+    # VOLATILITY MAPPING
     # -------------------------------------------------
 
-    def _load_weights(self) -> Dict[str, float]:
+    def _volatility_to_numeric(self, regime: str) -> int:
 
-        df = pd.read_excel(
-            self.excel_path,
-            sheet_name="WEIGHT_THRESHOLD_MATRIX"
-        )
+        mapping = {
+            "LOW": 0,
+            "MEDIUM": 1,
+            "HIGH": 2
+        }
 
-        weights = {}
-
-        for _, row in df.iterrows():
-
-            comp = str(row["component"]).lower()
-            weight = float(row["weight"])
-
-            weights[comp] = weight
-
-        return weights
+        return mapping.get(regime.upper(), 1)
 
 
     # -------------------------------------------------
-    # SCORE CALCULATION
+    # WRITE INPUTS TO EXCEL
     # -------------------------------------------------
 
-    def _calc_score(self, inputs: CoreInputs) -> float:
+    def _write_inputs(self, inputs: CoreInputs):
 
-        score = 0.0
+        wb = load_workbook(self.excel_path)
+        ws = wb[self.input_sheet]
 
-        score += self.weights.get("trend strength", 0) * inputs.trend_strength
+        values = {
+            "volatility_regime_input": self._volatility_to_numeric(inputs.volatility_regime),
+            "volume_score_input": inputs.volume_score,
+            "trend_strength_input": inputs.trend_strength,
+            "structure_ok_input": 1 if inputs.structure_ok else 0,
+        }
 
-        score += self.weights.get(
-            "structure validation",
-            0
-        ) * (1 if inputs.structure_ok else 0)
+        for row in ws.iter_rows(min_row=2):
 
-        score += self.weights.get(
-            "volume confirmation",
-            0
-        ) * inputs.volume_score
+            field = row[0].value
 
-        score += self.weights.get(
-            "confidence score",
-            0
-        ) * inputs.confidence_score
+            if field in values:
+                row[1].value = values[field]
 
-        # risk modifier
-        risk_val = 1 if inputs.risk_state == "OK" else 0
-
-        score += self.weights.get(
-            "risk state modifier",
-            0
-        ) * risk_val
-
-        return round(score, 4)
+        wb.save(self.excel_path)
 
 
     # -------------------------------------------------
-    # MAIN DECISION FUNCTION
+    # READ SCORE FROM EXCEL
+    # -------------------------------------------------
+
+    def _read_score(self) -> float:
+
+        wb = load_workbook(self.excel_path, data_only=True)
+        ws = wb[self.output_sheet]
+
+        # assume score in B2
+        score = ws["B2"].value
+
+        if score is None:
+            return 0.0
+
+        return round(float(score), 4)
+
+
+    # -------------------------------------------------
+    # DECISION
     # -------------------------------------------------
 
     def decide(self, inputs: CoreInputs) -> Dict[str, Any]:
 
-        ai_score = self._calc_score(inputs)
+        self._write_inputs(inputs)
+
+        ai_score = self._read_score()
 
         decision = "EXECUTE" if ai_score >= self.execute_threshold else "BLOCK"
 
